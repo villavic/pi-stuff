@@ -38,16 +38,11 @@ function check(name, fn) {
   }
 }
 
-function newestCapture() {
-  const dir = join(ROOT, ".pi/prompt-capture");
-  const files = readdirSync(dir)
-    .filter((f) => /^req-\d+\.json$/.test(f))
-    .sort();
-  if (files.length === 0) throw new Error(`no captures in ${dir}`);
-  return join(dir, files[files.length - 1]);
+function defaultCapture() {
+  return join(ROOT, "tests", "data", "capture.json");
 }
 
-const capturePath = process.argv[2] ?? newestCapture();
+const capturePath = process.argv[2] ?? defaultCapture();
 const payload = JSON.parse(readFileSync(capturePath, "utf8"));
 const toolNames = payload.tools.map((t) => t.function?.name ?? t.name);
 const nested = payload.tools.filter((t) => t.function).length;

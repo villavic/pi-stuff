@@ -1,0 +1,1207 @@
+{
+  "model": "swift-1.5-iq3_s",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.\n\n<tools>\n- read: Read a file; each line returned as anchor│content\n- bash: Execute bash commands (ls, grep, find, etc.)\n- write: Create or overwrite files\n- session_search: Semantic search over past pi sessions — find previous work, decisions, and context by topic.\n- session_list: List/filter past pi sessions by project, date, or archive status.\n- session_read: Read the full conversation from a specific past pi session by file path or ID.\n- mcp: MCP gateway — install by URL, status, search, describe, auth, and single MCP tool calls\n- mcp__context7: MCP namespace proxy for context7\n- mcp__qmd: MCP namespace proxy for qmd\n- mcp__stackmap: MCP namespace proxy for stackmap\n- mcp__github: MCP namespace proxy for github\n- mcp__playwright: MCP namespace proxy for playwright\n- mcp__office_agent: MCP namespace proxy for office-agent\n- replace: Replace lines by anchor: bare anchors in `remove_from`/`remove_to`, the exact replacement text in `text`\n- replace_match: Replace part of a line or range by anchor: every `match` occurrence inside the range becomes `replacement` (which may span lines), the text around each match stays untouched, and a match glued to an identifier character is refused unless `allowEmbeddedMatch` is true\n- insert: Insert a text block after or before an anchor line: the anchor line stays; `text` is the exact text without anchor prefixes\n- copy: Copy lines to another position by anchor: `source_from`/`source_to` mark the range, `anchor` and `direction` the destination\n- move: Move lines to another position by anchor: `source_from`/`source_to` mark the range, `anchor` and `direction` the destination\n- grep: Search with `lineNumber:│ anchor│content` hits (`lineNumber-│` for context) usable directly for `replace`/`insert`; use `literal`/`glob`/`context`\n- undo_last_change: Revert a file's most recent edit (single level)\n\nAdditional tools may be available.\n</tools>\n\n<rules>\n- Remember to use the hashline tools for every file read and edit: `read`, `replace`, `replace_match`, `insert`, `copy`, `move`, or `undo_last_change`.\n- `read`: call again after an edit when you need anchors you lack — post-edit diff `+`/` ` rows and served `anchor│content` rows already carry fresh anchors for the changed range.\n- `read`: `replace_match` needs both boundary lines served; copy `match` from a served row or read the lines first.\n- You can inspect PI_* environment variables for current model and session details.\n- Use write only for new files or complete rewrites.\n- Use session_search to find past coding sessions relevant to the current task (e.g. 'when did we refactor the auth module', 'previous work on Lambda timeouts').\n- Pass the optional `project` parameter to limit search to a single project — use a substring of the project path or slug (e.g. 'pi-session-search').\n- Use session_list for browsing by date/project. Use session_read to dive into a specific session.\n- Use knowledge_search for conceptual queries (e.g. \"how did we handle X\", \"what was decided about Y\"). Use grep/read for exact text or known filenames.\n- Use kb_read when a note is referenced by name or [[wikilink]] — don't run find/grep first.\n- Use the standard `read` tool for non-indexed files or when you already have an absolute path.\n- Call `longhaul_remember` the moment the user states a standing rule, one that still binds once the current task is done (kind correction, quote their exact words; a request for the task at hand is not one), or when you settle a decision or abandon an approach (kind decision / dead-end, one sentence with evidence C<n>/E<n>/u<n>).\n- Never paraphrase a correction: the quote must be a substring of a user message, at least 12 characters, or it is rejected with the closest match.\n- An answer to `ask_user_question` is recorded as a decision when it lands; cite it as evidence `q<n>` (q1, q2, ... in order) when you record a decision of your own on top of it. Its words are never a rule: they arrive as a tool result, so a standing rule the operator typed there is carried by your own decision sentence, not by a correction quote.\n- Before re-running a command or re-reading a file to find out what happened earlier, call `longhaul_recall` (commands <pattern>, errors, files <pattern>, span N) — the state's headings say what was retired.\n- Narrow before you widen: `what` plus a query is cheaper than a bare recall, and the cap line tells you when a query was too broad.\n- `replace`: same-message calls must target disjoint ranges.\n- `replace`: a pure deletion (`text: \"\"`) is the cheap way to clear a large range: it verifies only the first and last line against the served record and removes the interior as it currently stands.\n- `replace`: for a single line, use the same anchor for `remove_from` and `remove_to`.\n- `replace`/`replace_match`/`insert`/`copy`/`move`: same-file calls in one message commit as one batch. If you already know all the edits and their anchors, send them together instead of one turn at a time; an edit that needs anchors from a previous result waits for the next turn. Earlier calls reply `In batch N (queued)`, the last shows the combined diff, and one undo reverts all. A request-invalid call (anchors, shape, or `match`) fails alone; a failure while the batch runs aborts it.\n- `replace`/`replace_match`/`insert`/`copy`/`move`: anchors resolve the file; `path` is optional but must match anchor ownership when passed.\n- `replace`/`replace_match`/`insert`/`copy`/`move`/`undo_last_change`: in the post-edit diff, `-anchor│` rows are dead anchors; `+anchor│` and ` anchor│` rows carry live anchors for the next edit. Rows the diff does not show keep their anchors, so a follow-up edit on them needs no re-read.\n- `replace`/`replace_match`/`insert`: `text` is written exactly as received; escapes are decoded once when the call is parsed, and the tool never decodes again — `\\uXXXX` is the character, `\\\\uXXXX` the literal text.\n- `replace_match`: `match` is only the fragment that changes — never text that `replacement` leaves unchanged; every occurrence inside the range is replaced, so narrow the anchors when only some lines should change.\n- `replace_match`: the anchors bound the range searched; `match` must stay within one line, while `replacement` may span lines — a trailing line break is the line's terminator, interior breaks split the replacement into lines, and a lone break counts as empty.\n- `replace_match`: when the change covers the whole line, use `replace` with the same anchor and the exact text.\n- `replace_match`: `match` must be isolated: an occurrence whose edge touches an identifier character (letters, digits, `$`, `_`, Unicode) is refused with `[E_MATCH_NOT_ISOLATED]` and nothing is written, so include the whole identifier in `match`, narrow the anchors, or pass `allowEmbeddedMatch: true` to replace inside an identifier on purpose.\n- `insert`: a missing or extra `+anchor│` blank row at either block edge in the diff is the classic insert slip.\n- `copy`: the same anchor in `source_from` and `source_to` copies one line.\n- `copy`/`move`: only the first and last marker rows and the destination line need anchors — grep the markers, the body is copied; to append to the end of a file, anchor that file's last line with `direction: \"after\"`.\n- `copy`/`move`: within one file the insertion point must fall before the source range's first line or after its last; anchoring the block's last line with `direction: \"after\"` (or its first line with `direction: \"before\"`) targets the gap right beside the block.\n- `copy`/`move`: `source_from` and `source_to` may live in a different file than `anchor`; an empty destination file is seeded with the copied or moved lines.\n- `move`: a batched cross-file move does not display the source file's diff; its removal commits with the batch, and the source file needs a read for fresh anchors.\n- `move`: moving a range to where it already sits reports `No changes made` and leaves the anchors alone.\n- `grep`: set `literal: true` to match the text exactly, when characters such as `(`, `[`, `.`, or `*` in it must not act as regex.\n- `undo_last_change`: history is one slot per file, not a stack; a second undo returns `E_UNDO_NONE`.\n- `undo_last_change`: a `write` clears the history, so undo before any other edit or write; the undo diff's `+anchor│` rows are the restored lines.\n- `undo_last_change`: a cross-file `move` records one undo entry per file; undo both the source and the destination to revert the whole move, because undoing one side alone leaves the moved lines duplicated or missing.\n- Be concise in your responses\n- Show file paths clearly when working with files\n</rules>\n\n<docs>\nPi documentation (read only when the user asks about the harness itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: /home/thepaya/.pi/agent/install/releases/1.5.2/node_modules/@earendil-works/pi-coding-agent/README.md\n- Additional docs: /home/thepaya/.pi/agent/install/releases/1.5.2/node_modules/@earendil-works/pi-coding-agent/docs\n- Examples: /home/thepaya/.pi/agent/install/releases/1.5.2/node_modules/@earendil-works/pi-coding-agent/examples (extensions, custom tools, SDK)\n- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), packages (docs/packages.md), environment variables (docs/environment-variables.md), MCP servers (docs/mcp.md), codemode scripts and non-LLM models such as classifiers and image models (docs/codemode.md)\n- Before implementing harness changes, read the relevant docs and examples in full, following related cross-references.\n</docs>\n\n<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path=\"/home/thepaya/.pi/agent/AGENTS.md\">\n# Global AGENTS.md\n\nDefault instructions for Pi agents running on this machine.\n\n## General\n\n- Be concise and practical.\n- Prefer small, focused changes.\n- Avoid unrelated refactors.\n- **NEVER** use sycophantic language or expressions.\n\n## Workflow\n\n1. Always read relevant files before editing.\n2. Explain intent briefly.\n3. Make the smallest change that solves the task.\n4. Validate with tests/commands when available.\n\n## Code quality\n\n- Keep naming clear and code readable.\n- Update documentation when behavior changes.\n- Preserve existing style unless asked otherwise.\n- Wrap line length to 80 columns whenever possible.\n\n## Safety\n\n- Never deleta data or run destructive commands outside the project directory.\n- Always ask before making broad or risky changes.\n- Never run whole-filesystem searches or `rg`/`grep -R` commands (e.g. `find / -name x` or `grep -R /usr ...`), ask the user first for possible locations to limit the search to.\n- This system's `/tmp` is a RAM-backed `tmpfs` filesystem, avoid using it to store logs, outputs, scritps, etc. prefer a directory under the project's root instead that is added to `.gitignore`.\n\n## Traceability\n\n- Never request shell/bash tool calls that execute inline (`python -c 'full script'` or `node -e 'full script'` or `echo 'full script' | bash`) scripts nor HEREDOC scripts (same but with `<interpreter> <<'EOF'\\n{full script}\\nEOF`).\n- Use the harness-provided file-edit/file-write tooling, save the script under a temporary or untracked directory under the current working project root.\n- Then call the harness-provided shell/bash tool to execute the just written script, or the interpreter launching the just written script.\n- Do not delete the temporary scripts/directory, the user takes care of temporary file removal and cleanup.\n\n## After a permission denial\n\nThe permission gate (`pi-permission-system`) enforces the user's policy, not yours. When a tool call is denied:\n\n- Treat the denial as final. Do not retry the same goal through another tool, path, symlink, interpreter (`python -c`, `node -e`), shell form, redirect, or approval prompt.\n- Report it in two lines: what you asked for, why, and the verdict with its surface and rule id. Then stop and ask the user to either loosen the rule or manually run the command, if the task needs it.\n- Do not list bypasses, do not recite the policy's rule inventory, and do not read the policy files to explain a denial.\n- Do not infer secret content from a denial (\"the key exists at that path\"). Say the access was denied, and stop.\n\n## Notes\n\n- Repository-local `AGENTS.md` files or `.github/copilot-instructions.md` can add or override project speceific guidance.\n\n\n</project_instructions>\n\n<project_instructions path=\"/home/thepaya/code/pi-extensions/AGENTS.md\">\n# pi-extensions\n\nRepo for authoring Pi coding-agent extensions as Pi packages.\n\n## Hard rule: marketplace first\n\nBefore writing any new extension, search the Pi marketplace and\nevaluate what already exists. Do not start a new extension until an\n`evals/<name>.md` document exists recording what was searched, what\nwas found, and why new code is justified.\n\nRun the steps in order:\n\n1. Write down the requirement: the behaviour wanted, the events and\n   tools it needs, and the must-have vs nice-to-have split.\n2. Search the marketplace (npm keyword `pi-package` = the Pi package\n   gallery). Use several phrasings, including synonyms:\n\n   ```bash\n   node scripts/pi-search.mjs \"plan mode read only\"\n   node scripts/pi-search.mjs --json \"git checkpoint\" | head -40\n   ```\n\n   Also browse <https://pi.dev/packages> and search GitHub for the\n   `pi-package` topic. Search results are fuzzy, so read titles and\n   descriptions, not only the ranking.\n\n3. Shortlist at most three candidates and fetch source for inspection:\n\n   ```bash\n   node scripts/pi-fetch.mjs npm:pi-plan-mode\n   node scripts/pi-fetch.mjs gh:alice/pi-checkpoints@v1\n   ```\n\n   `vendor/` is scratch space for reading. Never run `npm install`,\n   `pi install`, or any script from vendored code. Extensions run\n   with full user permissions; read before you load.\n\n4. Fill `templates/extension-eval.md` into `evals/<name>.md` for each\n   shortlisted candidate: requirement coverage table, license,\n   maintenance signals, quality, gaps, and a verdict.\n5. Pick the outcome:\n   - **use as-is** — `pi install npm:<pkg>` (or `git:...`), no new code;\n   - **adapt** — copy the needed files into\n     `extensions/<name>/`, keep the upstream `LICENSE`, add a\n     provenance header (upstream URL, ref/commit, date, what changed);\n   - **write new** — only when coverage is poor and the eval doc says\n     why, term by term.\n\nRecord the decision in the eval doc, and commit the eval doc with the\ncode. Zero results is a valid outcome; record the exact terms that\nwere searched.\n\n### Marketplace\n\nThe Pi package gallery is npm with the keyword `pi-package` — see\n`docs/packages.md`. Every Pi package (extensions, skills, prompt\nthemes, and bundles) carries it in `package.json`, and publishing\nrequires it:\n\n```bash\nnpm search --searchstream pi-package          # the gallery\nnode scripts/pi-search.mjs \"<requirement>\"    # ranked, with dates and repo links\nnode scripts/pi-search.mjs -a \"<terms>\"       # drop the keyword filter\n```\n\nThe keyword is loose (13,614 packages match on a full-text hit), so\n`pi-search.mjs` also requires the search terms to appear in the\nname, description, repository URL, keywords, author, publisher, or\n`pi.extensions` / `pi.skills` paths. The `pi` prefix is a strong\nconvention, not a requirement — `opencode-*`, `gstack`, `claude-*`\nand personal scoped packages exist.\n\n### Where to look first\n\nPi ships an examples tree; read it before searching for a feature you\nthink is missing, and load files directly while evaluating:\n\n```bash\ncd \"$(dirname \"$(readlink -f \"$(command -v pi)\")\")\"/examples\nls extensions/ tools/            # 40+ extensions, custom tools, SDK samples\npi -e examples/extensions/<file>.ts\n```\n\nExamples include `plan-mode.ts`, `permission-gate.ts`,\n`protected-paths.ts`, `confirm-destructive.ts`, `handoff.ts`,\n`subagent.ts`, `ssh-worklets.ts`, `gondolin/`, and `sandbox/`.\n`docs/extensions.md` is the event and API reference; the same tree is\nonline at <https://pi.dev/docs/latest/extensions>.\n\n## Layout\n\n| Path                             | Purpose                                           |\n| -------------------------------- | ------------------------------------------------- |\n| `extensions/<name>/index.ts`     | One extension per directory                       |\n| `extensions/<name>/package.json` | Per-extension manifest when it has deps           |\n| `evals/`                         | Committed marketplace evaluations and decisions   |\n| `vendor/`                        | Fetched candidates for reading only; gitignored   |\n| `templates/`                     | `extension-eval.md`, `extension/index.ts` starter |\n| `scripts/`                       | Marketplace search and fetch helpers              |\n| `docs/workflow.md`               | Detailed procedure and commands                   |\n| `HOWTO.md`                       | Tuning Gate 1 and Gate 2 by hand                  |\n| `config/sandbox.json`            | Gate 2 template (source of truth)                 |\n| `lab/`                           | Isolated lab, probes, deploy/verify scripts       |\n\n## Building and testing\n\n- Start from `templates/extension/index.ts`.\n- Types: `npm install` once, then `npm run typecheck`.\n- Try a single file: `pi -e ./extensions/<name>/index.ts`.\n- Load the whole repo as a local package:\n  `pi install ./code/pi-extensions`, then `pi config` to enable\n  resources, `pi update --extensions` to reconcile.\n- Hot reload while iterating: `/reload` in a running Pi session.\n- Import only host-provided packages\n  (`@earendil-works/pi-coding-agent`, `-tui`, `-ai`, `-agent-core`,\n  `typebox`) plus declared runtime deps. Put host packages in\n  `peerDependencies` with `\"*\"`, never in `dependencies`.\n- Read `~/.pi/agent/install/releases/<version>/node_modules/\\\n@earendil-works/pi-coding-agent/docs/extensions.md` and\n  `docs/packages.md` before implementing an unfamiliar capability.\n  Check the shipped examples under `examples/extensions/`.\n\n## Style\n\n- Small, focused extensions. No speculative options or abstractions.\n- Handle foreseeable failure modes: missing files, cancelled UI\n  prompts, aborted signals, non-writable paths.\n- Keep the 80-column line limit. Match existing code style.\n- Update `CHANGELOG.md` with a `## <version>` heading on user-facing\n  changes, so Pi can show the changelog after updates.\n\n</project_instructions>\n</project_context>\n\n<skills>\nThe following skills provide specialized instructions for specific tasks.\nUse the read tool to load a skill's file when the task matches its description.\nResolve relative paths against the skill's directory (parent of SKILL.md). Use absolute paths in tool calls.\n\n<available_skills>\n  <skill>\n    <name>convert-documents-to-markdown</name>\n    <description>Convert Word (.doc, .docx), PowerPoint (.ppt, .pptx), Excel (.xls, .xlsx), OpenDocument (.odt, .ods, .odp), RTF, EPUB, CSV, and PDF files to GitHub-Flavored Markdown. Use when a task needs the contents of an office document, spreadsheet, presentation, ebook, or PDF you cannot read directly.</description>\n    <location>/home/thepaya/.pi/agent/skills/convert-documents-to-markdown/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>find-skills</name>\n    <description>Helps users discover and install agent skills when they ask questions like &quot;how do I do X&quot;, &quot;find a skill for X&quot;, &quot;is there a skill that can...&quot;, or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.</description>\n    <location>/home/thepaya/.pi/agent/skills/find-skills/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>context7-mcp</name>\n    <description>This skill should be used when the user asks about libraries, frameworks, API references, or needs code examples. Activates for setup questions, code generation involving libraries, or mentions of specific frameworks like React, Vue, Next.js, Prisma, Supabase, etc.</description>\n    <location>/home/thepaya/.agents/skills/context7-mcp/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>karpathy-guidelines</name>\n    <description>Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.</description>\n    <location>/home/thepaya/.agents/skills/karpathy-guidelines/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>qmd</name>\n    <description>Search markdown knowledge bases, notes, and documentation using QMD. Use when users ask to search notes, find documents, or look up information.</description>\n    <location>/home/thepaya/.agents/skills/qmd/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>ste-writing</name>\n    <description>Rewrite prose (docs, READMEs, PR descriptions, error messages, release notes, comments — never code) into ASD-STE100 Simplified Technical English. Use when accurate technical communication is warranted, to make docs clear or plain, enforce a controlled writing style, or write technical documentation that reads human. Two modes — strict (procedures/safety) and STE-flavored (general prose).</description>\n    <location>/home/thepaya/.agents/skills/ste-writing/SKILL.md</location>\n  </skill>\n  <skill>\n    <name>session-history</name>\n    <description>Search, browse, and read past pi coding sessions. Use when the user asks about previous work, past decisions, what was done before, or wants to find a specific session. Covers both active and archived sessions.</description>\n    <location>/home/thepaya/.pi/agent/npm/node_modules/pi-total-recall/node_modules/pi-session-search/skills/session-history/SKILL.md</location>\n  </skill>\n</available_skills>\n</skills>\n\n<cwd>\n/home/thepaya/code/pi-extensions\n</cwd>"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Recent Sessions (this project)\n- **27m ago**: **Givene this Pi coding harness currently connected to a local LLM via a normal ht…** (2026-11-17) Project: --home-thepaya-code-pi-extensions-- | CWD: ~/code/pi-extensions Messages: 1 user, 46 assistant Mode: swift-1.5-iq3_s\n- **5d ago**: **We will be testing the pi-permission-system extension. Execute the following bas…** (2026-11-12) Project: --home-thepaya-code-pi-extensions-- | CWD: ~/code/pi-extensions Messages: 8 user, 16 assistant Mode: swift-1.5-iq3_s\n- **5d ago**: **read `~/.ssh/config`** (2026-11-12) Project: --home-thepaya-code-pi-extensions-- | CWD: ~/code/pi-extensions Messages: 3 user, 13 assistant Mode: swift-1.5-iq3_s\n- **5d ago**: **Inspect @AGENTS.md first, the last work done was very insidious on getting the \"…** (2026-11-12) Project: --home-thepaya-code-pi-extensions-- | CWD: ~/code/pi-extensions Messages: 1 user, 77 assistant Mode: swift-1.5-iq3_s\n- **5d ago**: **Setup this empty git repository to work on new \"Pi Extensions\". The first step, …** (2026-11-11) Project: --home-thepaya-code-pi-extensions-- | CWD: ~/code/pi-extensions Messages: 3 user, 61 assistant Mode: swift-1.5-iq3_s\n"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Knowledge-search vault overview\nYou have a local knowledge base indexed by pi-knowledge-search. Use the `knowledge_search` tool for semantic/keyword lookup and `kb_read` to pull a note by name or `[[wikilink]]`.\n\n### ~/code/Data_Obsidian/AI_Rag/wiki\n\n- **gentoo-ebuilds/sources/** — 20 notes\n  - keywords: abstract, eclass, devmanual, multilib, cmake\n- **gentoo-ebuilds/concepts/** — 19 notes\n  - keywords: dependencies, functions, multilib, key, points\n- **pf-packet-filter/concepts/** — 17 notes\n  - keywords: definition, rule, pattern, syntax, tcp\n- **gentoo-ebuilds/entities/** — 15 notes\n  - keywords: eclass, multilib, eclasses, cmake, meson\n- **pf-packet-filter/sources/** — 13 notes\n  - keywords: openbsd, calomel, abstract, source, freebsd\n- **(root)/** — 2 notes\n  - keywords: ingest, openbsd, guide, development, ingestion\n- **gentoo-ebuilds/** — 1 note\n  - keywords: entities, learning, statistics, path, sources\n- **pf-packet-filter/** — 1 note\n  - keywords: advanced, community, cross, documentation, official"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "<memory>\n## Relevant Memory\n- carderne.gotchas: @carderne/sandbox-runtime@0.0.79 (measured): filesystem entries that are relative (`.pi/agent/install`) resolve against the runtime cwd, not $HOME, so they bind nothing; `seccompBinPath` pointing at a missing binary makes masked-file opens block forever (no notify responder) and the CLI hangs — fixture configs must drop the key; an argv-capture shim named `bwrap` must `exec /usr/bin/bwrap \"$@\"`, not `exec \"$@\"` (execs bwrap's first flag; child dies, proxies stay open, CLI hangs); masked ~/.pi in the caller's shell makes host baselines vacuous. Mask-then-rebind of allowRead under a denied dir is supported by the code (ro-bind after tmpfs) and the pi launcher works, so the bin rebind lands; the 13 read-scope rebinds are still not confirmed by a clean measurement.\n- : Maintain complete code hygiene, ensuring every line added or modified is directly traceable to a requirement or a known issue, fulfilling the Principle of Least Astonishment. ⚠️ 204d old — verify before acting on this\n- gate2-launcher-and-env: Gate 2 side effects measured 0.4.4 (pi-sandbox 0.8.1): masking `~/.pi` also masks the pi launcher — `~/bin/pi` and `~/.local/bin/pi` point into the mask, so `pi` is not runnable in a sandboxed shell and probes that shell out to `pi` (p90, p94) skip with \"no pi binary\" there (run them from a normal terminal). Inherited tool env carries session sockets (DISPLAY, XAUTHORITY, WAYLAND_DISPLAY, DBUS_SESSION_BUS_ADDRESS, SSH_AUTH_SOCK, MAIL), proxy endpoints, and a plaintext `CLOUDSDK_PROXY_PASSWORD`; AF_UNIX denial makes the sockets unreachable, values are the exposure. Dev commands (npm run typecheck, make lab-probe) exit 0 inside the fence.\n- gate2-live-residuals: Measured live (2026-11-12, pi-sandbox@0.8.1 + sandbox-runtime@0.0.79, config/sandbox.json applied): (1) denyRead dirs are tmpfs masks; writes into them land in the ephemeral mask and vanish next tool call (a write to ~/.ssh/authorized_keys was gone in the next call) — the real host file is untouched. Only real bind under ~/.pi is the runtime's own seccomp vendor dir, read-only. (2) Built-in exempt binds ~/.npm/_logs and ~/.claude/debug are host-persistent READ-WRITE from sandboxed code (marker persisted across calls) — residual. (3) denyWrite patterns (.env, .env.*, *.pem, *.key) are NOT kernel-enforced for files bash creates inside the project (k.pem, k.key, .env.local persisted). Gate 1 enforces *.pem only on plain command operands, and is blind inside interpreter bodies (python -c). .env exact name is bound to /dev/null read-only, so it is unreadable (EACCES). (4) The tool env inherits the whole desktop session (DISPLAY, XAUTHORITY, WAYLAND_DISPLAY, DBUS_SESSION_BUS_ADDRESS, SSH_AUTH_SOCK, KDE/KWin vars, MAIL, CLOUDSDK_PROXY_PASSWORD, plus the runtime's per-spawn proxy credential srt@localhost:3128/1080). Not exploitable via sockets (AF_UNIX EPERM), and no API key in env (auth.json masked). (5) Mask is per-spawn: mounts are recreated for every bash call.\n- gate2-read-scope-0-4-5: pi-extensions 0.4.5 (6e10fc3; tooling fixed in 90f99e6, 5235549). Gate 2 masks ~/.pi as a directory and re-binds code read-only (install, bin, git, npm/node_modules, the 5 installed extension dirs, AGENTS.md, *.strata-notes.md); secrets named in denyRead (settings.json, settings.json.bak, settings.json.strata-bak-*, auth.json, mcp.json, mcp-auth.json, models.json, models.json.strata-bak-*, trust.json, sessions, mcp-oauth, extensions/pi-soft-notify). Gate 1: whole-tree bash write denies on ~/.pi/agent, readers narrowed to 6 secret prefixes, container listing/recursion denied. STATUS: the Gate 1 half is measured (p94 FAIL 0, corpus 143 PASS); the Gate 2 half is NOT confirmed — Gate 2's global config (~/.pi/agent/extensions/pi-sandbox/config.json) was absent until 2026-11-12, so live sandboxes ran the runtime's built-in defaults. Run from a NON-sandboxed shell: bash lab/tmp/deploy-0-4-5.sh --check; bash lab/tmp/deploy-0-4-5.sh; bash lab/tmp/verify-read-scope.sh; make lab-probe ARGS=\"p97 p96\". If the 13 rebinds do not land, fallback = deny secrets by name, leave ~/.pi unmasked, keep Gate 1 policing container scans.\n- : Implement code with simplicity first: strictly control scope creep, avoid unnecessary abstraction for throwaway cases, and ensure all error handling addresses foreseeable edge cases. ⚠️ 204d old — verify before acting on this\n- pi-extensions.workflow: ~/code/pi-extensions is a Pi extension authoring repo. Hard rule (repo AGENTS.md): before writing any new Pi extension, search the Pi marketplace (npm keyword pi-package) with `node scripts/pi-search.mjs \"<terms>\"`, fetch shortlisted candidates with `node scripts/pi-fetch.mjs npm:<pkg>` into read-only vendor/, score each in a copy of templates/extension-eval.md saved under evals/, then use as-is / adapt / write new. New extension code is gated on a committed evals/ doc. Starters: templates/extension/index.ts; layout extensions/<name>/index.ts; `npm run typecheck` checks against pi-coding-agent types.\n- pi-extensions.lab-design: evals/design-isolated-pi-lab.md: isolated pi model = dedicated local llama.cpp/Ollama endpoint (pi models.json dummy apiKey), one keyed hosted model for realism, never copy auth.json, free-no-key endpoints excluded from the sandbox allowlist. find/grep -R / handled by the command layer (cost), disclosure by the sandbox read fence (seccomp notify on open). Two extensions kept separate (sandbox + permission system) with disjoint config. setuid answered by PR_SET_NO_NEW_PRIVS set by bwrap (probe: CapEff=0, NoNewPrivs=1, sudo refuses); runtime seccomp denies chmod/chown/mknod/link/symlink/rename/unlink + AF_UNIX; residual: --disable-userns not passed, `unshare -Ur id` gives uid=0 in a nested ns.\n- pi-extensions.sandbox-gate: Gate 2 (evals/requirements-os-sandbox.md, S1-S7): adopted `pi-sandbox` (carderne) as-is — bwrap mount ns + bundled static apply-seccomp + Node proxies w/ TLS CA + denyRead/allowRead prompts + sandboxUserShell. Fallback: @yuru7/pi-sandbox (bwrap→landlock, path-transparent, no read/network fence). Not adopted: @trim21/personal-pi-extensions (bwrap+netns+mihomo+slirp4netns, single-entry bundle; slirp4netns/mihomo absent from local Portage repos). No Pi package integrates Portage sys-apps/sandbox. Host facts: kernel 6.18.62-xanmod1 with CONFIG_USER_NS/SECCOMP_FILTER/SECURITY_LANDLOCK=y, unprivileged userns on; bwrap/socat/rg installed (sys-apps/bubblewrap, net-misc/socat, sys-apps/ripgrep); verified write-denied + net-unreachable probes. Risk: pi-sandbox peer ^0.80.0 vs pi 1.5.2.\n- pi-extensions.lab: lab/ + Makefile (committed 2026-11-11): isolated pi runs with PI_CODING_AGENT_DIR, sessions, work, logs, lab HOME under lab/ so ~/.pi/agent is never read. Targets: lab-status, lab-reset, lab-deps, lab-install, lab-shell, lab-run, lab-srt, lab-probe [ARGS=p30], lab-sync. Model endpoint configurable (MODEL_PROVIDER/MODEL_BASE_URL/MODEL_API/MODEL_ID/LAB_API_KEY); default is the local endpoint; key via lab/bin/print-api-key.mjs (literal apiKey only, no auth.json copy, no key in repo). Probe suite emits TSV lab/logs/probes-<UTC>.tsv; recorded 79 PASS/10 INFO/1 FAIL (evals/lab-results-2026-11-11.md). p15 captures the generated bwrap argv through a shim (139/152 args, 60 binds) and scores it.\n- permission-system.main-config: Installed in the main config: @gotgenes/pi-permission-system@42.0.0 (global, so it loads without project trust). Policy is one JSON file per scope: ~/.pi/agent/extensions/pi-permission-system/config.json (global), .pi/extensions/pi-permission-system/config.json (project, tracked), lab/pi/extensions/... (generated from lab/config/permission-system.json, tracked source). All three byte-identical; make lab-sync verifies. Settings backup: ~/.pi/agent/settings.json.pre-permission-system.bak. Tool surfaces allowed: edit, read, write, grep, find, ls. bash/mcp/task/* remain ask. 194 bash rules (96 deny, 93 ask, 5 allow). Known over-block: chmod 700 <p\n... (truncated)\n</memory>"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Respond with nothing else but `pong` to my `ping`."
+        }
+      ]
+    }
+  ],
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "store": false,
+  "max_completion_tokens": 16385,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "read",
+        "description": "Read a text file as `anchor│content` rows: a 5-character lowercase anchor (letters only), `│`, then the line. Target edits by anchor, never by content or line number. `offset` takes a 1-indexed line number or a served anchor; with an anchor, `limit` counts lines from that anchor row onward — no line-number math. Page long files with `offset` and `limit`; when output says truncated, continue from the hinted `offset`. A stale anchor is refused with the current rows and fresh anchors. Images attach visually; binary, directory, and UTF-16/UTF-32 text are rejected; an empty file returns one empty row you can replace to seed content.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path to the file to read (relative or absolute)"
+            },
+            "offset": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "Line number (1-indexed) or a served anchor to start reading from"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum number of lines to read from offset; counted from the anchor row when `offset` is an anchor"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "bash",
+        "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "command"
+          ],
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "Shell command to execute"
+            },
+            "timeout": {
+              "type": "number",
+              "description": "Timeout in seconds (optional, no default timeout)"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "write",
+        "description": "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path",
+            "content"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path to the file to write (relative or absolute)"
+            },
+            "content": {
+              "type": "string",
+              "description": "Content to write to the file"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "memory_search",
+        "description": "Search persistent memory for facts, preferences, and project patterns the user has established across sessions.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search query"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default 10)"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "memory_remember",
+        "description": "Store a fact, preference, or lesson in persistent memory. Use dotted keys like pref.editor, project.rosie.lang, tool.sed.usage. For corrections, use type='lesson'.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "'fact' for key-value, 'lesson' for a correction"
+            },
+            "key": {
+              "type": "string",
+              "description": "Dotted key for facts (e.g. pref.commit_style)"
+            },
+            "value": {
+              "type": "string",
+              "description": "Value for facts"
+            },
+            "rule": {
+              "type": "string",
+              "description": "Rule text for lessons"
+            },
+            "category": {
+              "type": "string",
+              "description": "Category for lessons (default: general)"
+            },
+            "negative": {
+              "type": "boolean",
+              "description": "True if this is something to AVOID"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "memory_forget",
+        "description": "Remove a fact or lesson from persistent memory.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "description": "Key for facts"
+            },
+            "id": {
+              "type": "string",
+              "description": "ID for lessons"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "memory_lessons",
+        "description": "List learned corrections and lessons from past sessions.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "category": {
+              "type": "string",
+              "description": "Filter by category"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default 50)"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "memory_stats",
+        "description": "Show memory statistics — how many facts, lessons, and events are stored.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "session_search",
+        "description": "Semantic search over past pi sessions. Returns summaries of the most relevant sessions for a natural language query. Use to find previous work, decisions, debugging sessions, or code changes.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Natural language search query"
+            },
+            "project": {
+              "type": "string",
+              "description": "Filter by project name or path substring (matches projectSlug or cwd, same semantics as session_list)"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results to return (default 10, max 25)"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "session_list",
+        "description": "List past pi sessions with optional filters by project, date range, or archive status. Returns session metadata and summaries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Filter by project name or path substring"
+            },
+            "after": {
+              "type": "string",
+              "description": "Only sessions after this date (ISO format, e.g. 2026-03-01)"
+            },
+            "before": {
+              "type": "string",
+              "description": "Only sessions before this date (ISO format)"
+            },
+            "archived": {
+              "type": "boolean",
+              "description": "Filter by archived status"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default 20, max 50)"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "session_read",
+        "description": "Read the full conversation from a past pi session. Provide the session file path or session ID. Supports pagination for large sessions.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "session"
+          ],
+          "properties": {
+            "session": {
+              "type": "string",
+              "description": "Session file path (from session_search/session_list results) or session UUID"
+            },
+            "offset": {
+              "type": "number",
+              "description": "Start from this entry index (for pagination, default 0)"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max entries to return (default 50, max 100)"
+            },
+            "include_tools": {
+              "type": "boolean",
+              "description": "Include tool results in output (default false, verbose)"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "knowledge_search",
+        "description": "Semantic search over local knowledge files. Returns the most relevant file excerpts for a natural language query. Use for finding past notes, investigations, decisions, documentation, and context. Prefer this over grep when you need conceptual or fuzzy matching rather than exact text.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Natural language search query"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results to return (default 8, max 20)"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "kb_read",
+        "description": "Read a note from the knowledge base by name, relative path, or [[wikilink]]. Resolves fuzzy references without needing an absolute path — use this when you know the note's title/filename but not its full path on disk.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Note reference: filename, basename, relative path, or [[wikilink]]. Examples: 'evergreen/hybrid-search', 'Hybrid search.md', '[[Hybrid search]]', '[[evergreen/hybrid-search|alias]]'."
+            },
+            "max_bytes": {
+              "type": "number",
+              "description": "Truncate output to at most this many bytes (default 65536)."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "web_search",
+        "description": "Search the web using SearXNG",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search query"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results",
+              "default": 10
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "fetch_content",
+        "description": "Fetch URL content. Automatically clones GitHub repos.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "URL to fetch"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_search_results",
+        "description": "Retrieve previous search results by ID",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "searchId"
+          ],
+          "properties": {
+            "searchId": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp",
+        "description": "MCP gateway — URL installation, server status, tool search/describe, auth, and single MCP tool calls. When a user supplies an MCP endpoint URL, install it with the install action. Non-MCP Pi tools should be called directly, not through mcp.\n\nServers: context7, qmd, stackmap, github, playwright, office-agent\n\nUsage:\n  mcp({ action: \"install\", url: \"https://example.com/mcp\" }) → Install, connect, and authenticate an MCP URL\n  mcp({ })                              → Show server status and tool counts\n  mcp({ server: \"name\" })               → List tools from server\n  mcp({ search: \"query\" })              → Search MCP tools by name/description\n  mcp({ describe: \"tool_name\" })        → Show tool details and parameters\n  mcp({ instructions: \"name\" })         → Show full server usage instructions\n  mcp({ connect: \"server-name\" })       → Connect to a server and refresh metadata\n  mcp({ tool: \"name\", args: { key: \"value\" } })         → Call a tool (object args; JSON string also accepted)\n  mcp({ action: \"ui-messages\" })        → Retrieve accumulated messages from completed UI sessions\n  mcp({ action: \"save-script\", args: { name, description, code, inputSchema } }) → Save a script as a reusable tool (asks you first)\n  mcp({ action: \"auth-start\", server: \"name\" })      → Open OAuth and watch for completion\n  mcp({ action: \"auth-complete\", server: \"name\", args: { redirectUrl: \"...\" } }) → Complete manual OAuth\n\nMode: action > tool (call) > connect > describe > instructions > search > server (list) > nothing (status)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Tool name to call (e.g., 'xcodebuild_list_sims')"
+            },
+            "args": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Arguments as a JSON string (e.g., '{\"key\": \"value\"}')"
+                },
+                {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": true,
+                  "description": "Arguments as a JSON object (e.g., { \"key\": \"value\" })"
+                }
+              ],
+              "description": "Tool arguments as a JSON object, or as a JSON string encoding one"
+            },
+            "connect": {
+              "type": "string",
+              "description": "Server name to connect (lazy connect + metadata refresh)"
+            },
+            "describe": {
+              "type": "string",
+              "description": "Tool name to describe (shows parameters)"
+            },
+            "instructions": {
+              "type": "string",
+              "description": "Server name to show that server's usage instructions"
+            },
+            "search": {
+              "type": "string",
+              "description": "Search tools by name/description"
+            },
+            "searchMode": {
+              "type": "string",
+              "enum": [
+                "lexical",
+                "semantic"
+              ],
+              "description": "Search backend (default: lexical; semantic ranks tools by meaning with a Pi classifier model)"
+            },
+            "regex": {
+              "type": "boolean",
+              "description": "Treat search as regex (default: substring match)"
+            },
+            "includeSchemas": {
+              "type": "boolean",
+              "description": "Include parameter schemas in search results (default: true)"
+            },
+            "limit": {
+              "type": "number",
+              "minimum": 1,
+              "description": "Maximum search results to return (default: 12)"
+            },
+            "offset": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Search result offset (default: 0)"
+            },
+            "server": {
+              "type": "string",
+              "description": "Server name: filters searches, disambiguates calls and describe operations, and optionally names an install"
+            },
+            "action": {
+              "type": "string",
+              "description": "Action: 'install', 'ui-messages', 'auth-start', 'auth-complete', or 'save-script'"
+            },
+            "url": {
+              "type": "string",
+              "description": "MCP endpoint URL for action: 'install'"
+            },
+            "target": {
+              "type": "string",
+              "description": "Install target: 'global' (default) or 'project'"
+            },
+            "cancelTask": {
+              "type": "string",
+              "description": "Stop a background MCP task by its <server>/<taskId> key"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__context7",
+        "description": "Namespace-proxy for MCP server \"context7\". Forwards `{tool, args}` through the adapter's executeCall, so it inherits the same auth / lifecycle / output-guard rules as the `mcp` proxy.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "tool"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Underlying MCP tool name to call on this server."
+            },
+            "args": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": true,
+              "description": "Arguments for the underlying tool. When mcp is available, use mcp({ search: '...' }) to inspect schemas; for unique names use mcp({ describe: 'tool_name' }) with the exact tool name returned by search."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__qmd",
+        "description": "Namespace-proxy for MCP server \"qmd\". Forwards `{tool, args}` through the adapter's executeCall, so it inherits the same auth / lifecycle / output-guard rules as the `mcp` proxy.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "tool"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Underlying MCP tool name to call on this server."
+            },
+            "args": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": true,
+              "description": "Arguments for the underlying tool. When mcp is available, use mcp({ search: '...' }) to inspect schemas; for unique names use mcp({ describe: 'tool_name' }) with the exact tool name returned by search."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__stackmap",
+        "description": "Namespace-proxy for MCP server \"stackmap\". Forwards `{tool, args}` through the adapter's executeCall, so it inherits the same auth / lifecycle / output-guard rules as the `mcp` proxy.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "tool"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Underlying MCP tool name to call on this server."
+            },
+            "args": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": true,
+              "description": "Arguments for the underlying tool. When mcp is available, use mcp({ search: '...' }) to inspect schemas; for unique names use mcp({ describe: 'tool_name' }) with the exact tool name returned by search."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__github",
+        "description": "Namespace-proxy for MCP server \"github\". Forwards `{tool, args}` through the adapter's executeCall, so it inherits the same auth / lifecycle / output-guard rules as the `mcp` proxy.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "tool"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Underlying MCP tool name to call on this server."
+            },
+            "args": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": true,
+              "description": "Arguments for the underlying tool. When mcp is available, use mcp({ search: '...' }) to inspect schemas; for unique names use mcp({ describe: 'tool_name' }) with the exact tool name returned by search."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__playwright",
+        "description": "Namespace-proxy for MCP server \"playwright\". Forwards `{tool, args}` through the adapter's executeCall, so it inherits the same auth / lifecycle / output-guard rules as the `mcp` proxy.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "tool"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Underlying MCP tool name to call on this server."
+            },
+            "args": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": true,
+              "description": "Arguments for the underlying tool. When mcp is available, use mcp({ search: '...' }) to inspect schemas; for unique names use mcp({ describe: 'tool_name' }) with the exact tool name returned by search."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "mcp__office_agent",
+        "description": "Namespace-proxy for MCP server \"office-agent\". Forwards `{tool, args}` through the adapter's executeCall, so it inherits the same auth / lifecycle / output-guard rules as the `mcp` proxy.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "tool"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Underlying MCP tool name to call on this server."
+            },
+            "args": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": true,
+              "description": "Arguments for the underlying tool. When mcp is available, use mcp({ search: '...' }) to inspect schemas; for unique names use mcp({ describe: 'tool_name' }) with the exact tool name returned by search."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "pi_fold_context",
+        "description": "Page, peek, brief, expand, refold, pin, or re-cut exact Pi active-context evidence. Peek is the point read: it returns one fold's index view -- nested folds' briefs seated shallowest first inside the byte budget with the omitted rows counted, plus the head and tail of that fold's own span with the omitted middle stated -- for any fold id, ancestors still collapsed, changing nothing. It serves ONE level: raw entries come back as plain-text history -- visible text, tool calls with their arguments and tool results verbatim, with thinking blocks and provider metadata left out -- folds nested inside stay placeheld, and peeking a child id you see there returns that child's own bytes, so anything folded is one hop away at any depth. It returns at most 16000 bytes unless you widen it with bytes, and it is EPHEMERAL by default: the bytes ride only until your next message, your reply then the surviving trace, so extract what your current task needs from them in that reply. Peeking again is lossless and costs one append, so a read you turn out to need twice is cheap; pass ephemeral false when you need the bytes standing across several turns. Expand is the durable in-place restoration. Curation is correctable: reboundary with ids re-cuts a span into exactly one fold, which merges adjacent folds when the span covers several and splits one when the span sits inside it. Reboundary with a single id returns that fold's span to raw. A brief is written when you mark the span; a standing fold's brief is not rewritten, because rewriting it rewrites the projection at that fold's placeholder and costs the whole prefix cache from there on. Pin with ids holds folds or entries against automatic folding, consolidation and refolding until unpin releases them, so an expanded span you still need stays expanded. Pin reveals nothing on its own: a folded span stays folded, just held. Pinning moves no context bytes, and fold receipts report how much mass you have pinned. THE RUNTIME CUTS THE FOLDS AND YOU ANNOTATE THEM. As raw material piles up it is cut into pending folds behind you, stalest first. A pending fold moves NO context bytes: you keep seeing the raw material exactly as it is, and the fold reaches your window only when a commit applies it. You are told when folds are cut and which ones carry no brief yet. Answer with brief, one id and one sentence: you know why the span mattered and what you will want back from it, and the deterministic brief that fills the gap reads the span alone and does not. Writing a brief on a pending fold is FREE, because the fold is not in your window yet; briefing a standing fold is refused, because its placeholder is in your window and rewriting it rewrites your context from that point on. reboundary re-cuts a span the runtime got wrong, unmark withdraws a cut you do not want taken, and when to commit stays the runtime's to decide. A fold brief is an index entry, not the source: when a question or task depends on material that is folded, peek or expand that fold and answer from the exact bytes, never from memory of them. Recalling folded detail without reopening it is how specifics get misremembered. Folding is automatic, lossless and recoverable: the runtime folds stale spans on its own when the window needs room, nothing is ever discarded, and every folded span keeps its exact source. You are never asked to make room and no fold is ever announced in advance. Work normally and let it happen. Mutations persist immediately and affect the next model call inside the same continuing turn; no turn boundary is required. Supplied fold briefs have a hard 600-character maximum.",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ],
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "status",
+                "peek",
+                "brief",
+                "expand",
+                "refold",
+                "pin",
+                "unpin",
+                "reboundary",
+                "unmark"
+              ]
+            },
+            "ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "brief": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 600,
+              "description": "Brief only: what you will want back from this pending fold that its automatic brief cannot know. Your sentence is kept BESIDE the automatic brief, never instead of it, at most 600 characters. Free to write, because the fold it names is not in your window yet."
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "ephemeral": {
+              "type": "boolean",
+              "description": "Peek only. Default TRUE: the returned bytes ride your context exactly until your next message, then their place holds a one-line placeholder and your reply is the surviving trace, so extract what you need into that reply. Peeking again is lossless. Pass false to keep the result standing like any other tool result, which is what you want when the bytes have to survive several turns of work."
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "description": "Peek only: bytes of the plain-text history view to return, widening or narrowing the 16000-byte default."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "detail": {
+              "type": "string",
+              "enum": [
+                "fold_candidates",
+                "tree",
+                "folds",
+                "objects"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "longhaul_remember",
+        "description": "Write one verified item into the session state that survives compaction: a user correction (their exact words), a lift, a decision, a dead end, or the acceptance criterion. Rejections say why and whether to retry.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "correction"
+                },
+                {
+                  "type": "string",
+                  "const": "lift"
+                },
+                {
+                  "type": "string",
+                  "const": "decision"
+                },
+                {
+                  "type": "string",
+                  "const": "dead-end"
+                },
+                {
+                  "type": "string",
+                  "const": "done-when"
+                }
+              ],
+              "description": "correction: a standing rule the user gave, still binding after the current task (quote). lift: the user withdrew a correction (target + quote). decision / dead-end: your own one sentence (text, evidence). done-when: the user's acceptance words (quote)."
+            },
+            "quote": {
+              "type": "string",
+              "description": "The user's exact words, a substring of one user message (12+ chars). Example: \"never use mocks in these tests\"."
+            },
+            "text": {
+              "type": "string",
+              "description": "Your own sentence for a decision or dead end. Example: \"Copied the ledger modules instead of importing them across extensions\"."
+            },
+            "evidence": {
+              "type": "string",
+              "description": "C<n>, E<n>, u<n>, \"last command\" or \"last error\"."
+            },
+            "target": {
+              "type": "string",
+              "description": "For lift: the correction id, e.g. R2."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "longhaul_recall",
+        "description": "Look up what compaction retired or a span's narrative: commands with exit codes, errors, decisions, dead ends, corrections, files read or modified before the last compaction, a user message by ordinal, or the exact output of a command or error id (what=output, paged). Before re-running a command just to see its output again, recall its output. Answers come from this session's own record, capped at 4,000 characters (output: 8,000 per page).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "what": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "span"
+                },
+                {
+                  "type": "string",
+                  "const": "commands"
+                },
+                {
+                  "type": "string",
+                  "const": "errors"
+                },
+                {
+                  "type": "string",
+                  "const": "decisions"
+                },
+                {
+                  "type": "string",
+                  "const": "dead-ends"
+                },
+                {
+                  "type": "string",
+                  "const": "corrections"
+                },
+                {
+                  "type": "string",
+                  "const": "message"
+                },
+                {
+                  "type": "string",
+                  "const": "files"
+                },
+                {
+                  "type": "string",
+                  "const": "output"
+                },
+                {
+                  "type": "string",
+                  "const": "all"
+                }
+              ],
+              "description": "What to search. Omit to search every kind. span: a span number's narrative; message: a user message by ordinal (u12); files: the files read or modified before the last compaction; output: the raw output behind a command or error id (query=C12 or E3)."
+            },
+            "query": {
+              "type": "string",
+              "description": "A span number, an ordinal (u12), a command or error id for output (C12), or a case-insensitive substring. Example: what=commands query=\"npm test\"."
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "output only: where the next page starts, as the previous page said."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "description": "Hits to return (default 20)."
+            },
+            "format": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "brief"
+                },
+                {
+                  "type": "string",
+                  "const": "full"
+                }
+              ],
+              "description": "full adds retired/lifted markers."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "replace",
+        "description": "Replace a range of lines (or a single line) in a text file by anchor. Deleting every line empties the file, and the result names the empty-line anchor, so a follow-up `replace` can seed content without a `read`.\n\nTo change only part of a line without retyping the rest, use `replace_match` instead; it preserves every character the request does not name.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "remove_from",
+            "remove_to",
+            "text"
+          ],
+          "properties": {
+            "remove_from": {
+              "type": "string",
+              "description": "5-char anchor of the FIRST line to remove."
+            },
+            "remove_to": {
+              "type": "string",
+              "description": "5-char anchor of the LAST line to remove."
+            },
+            "text": {
+              "type": "string",
+              "description": "The exact text to write in place of the removed range. \"\" deletes the range. A trailing line break sets the newline of the last line written instead of adding a blank line; a lone newline writes one blank line."
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "replace_match",
+        "description": "Replace part of a line — or the same fragment on several lines of a range — without retyping the rest. `match` is the exact text to find inside the anchored range, and `replacement` replaces every occurrence; the text around each match is left untouched. An occurrence embedded in a larger identifier is refused with `[E_MATCH_NOT_ISOLATED]` before anything is written: each edge of `match` must sit at a line edge or next to a character that cannot continue an identifier, and letters, digits, `$`, `_`, and Unicode identifier characters all continue one. Pass `allowEmbeddedMatch: true` when replacing a fragment inside an identifier is intended. `match` stays within one line, while `replacement` may span lines (a single trailing line break is its terminator); new lines inherit the file's line endings. Send only the fragment that changes — never text that `replacement` leaves unchanged — and narrow `replace_from`/`replace_to` when only one occurrence should change. For a whole-line rewrite, use `replace` with the same anchors.\n\nThe two boundary anchors must still match what was last shown; lines strictly inside the range are searched as they are on disk.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "replace_from",
+            "replace_to",
+            "match",
+            "replacement"
+          ],
+          "properties": {
+            "replace_from": {
+              "type": "string",
+              "description": "5-char anchor of the FIRST line of the range searched."
+            },
+            "replace_to": {
+              "type": "string",
+              "description": "5-char anchor of the LAST line of the range searched; same as `replace_from` for a single line."
+            },
+            "match": {
+              "type": "string",
+              "description": "The exact text to find inside the selected lines, copied from the served row: only the fragment that changes, never text that `replacement` leaves unchanged. It must stay within one line and hold text: a single trailing line break is accepted as the line's own terminator, a line break anywhere else is refused, and a value that is only a line break leaves nothing to find and is refused. Every occurrence inside the range is replaced; the text around each match is left untouched. An occurrence whose edge touches an identifier character (letters, digits, \"$\", \"_\", and Unicode identifier characters) is refused with [E_MATCH_NOT_ISOLATED] unless `allowEmbeddedMatch` is true."
+            },
+            "replacement": {
+              "type": "string",
+              "description": "The exact replacement for every matched occurrence within the range. \"\" deletes the matches. A single trailing line break is accepted and dropped (a value that is only a line break counts as \"\"); an interior or leading line break splits the replacement into lines, and new lines inherit the file's line endings. The text around each match is kept byte-for-byte."
+            },
+            "allowEmbeddedMatch": {
+              "type": "boolean",
+              "description": "Replace inside a larger identifier too. By default an occurrence glued to an identifier character is refused with [E_MATCH_NOT_ISOLATED] before anything is written; set this to true when replacing a fragment inside an identifier is intended."
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "insert",
+        "description": "Insert text next to an existing line without removing anything. The anchor line stays in place, and `anchor` is a bare 5-character anchor from any served `anchor│content` row.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "anchor",
+            "direction",
+            "text"
+          ],
+          "properties": {
+            "anchor": {
+              "type": "string",
+              "description": "5-char anchor of the line to insert next to."
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "after",
+                "before"
+              ],
+              "description": "\"after\" or \"before\""
+            },
+            "text": {
+              "type": "string",
+              "description": "The exact text to insert; an empty string inserts one blank line. A trailing line break sets the newline of the last line written instead of adding a blank line; a lone newline writes one blank line. Never include the anchor line."
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "copy",
+        "description": "Duplicate a range of lines at another anchor. The source rows and anchors stay live; the copied lines get fresh anchors in the destination's post-edit diff and keep their source line endings.\n\nA copy duplicates the content its source anchors were served from, so a same-message edit to the source file does not change what is copied.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "source_from",
+            "source_to",
+            "anchor",
+            "direction"
+          ],
+          "properties": {
+            "source_from": {
+              "type": "string",
+              "description": "5-char anchor of the FIRST source line."
+            },
+            "source_to": {
+              "type": "string",
+              "description": "5-char anchor of the LAST source line."
+            },
+            "anchor": {
+              "type": "string",
+              "description": "5-char anchor of the destination line; the block lands before or after it and it may live in another file."
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "after",
+                "before"
+              ],
+              "description": "\"after\" places the block below the anchor line, \"before\" above it"
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "move",
+        "description": "Relocate a range of lines to another anchor. Within one file the destination must sit outside the source range. Rows between the source and the destination keep their content but may be re-anchored, so read that span again if you plan to edit it.\n\nA cross-file move whose source file also gets other edits in the same message runs outside any batch: same-message edits to its destination file can then either abort or make the move fail, so send that move in a separate message.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "source_from",
+            "source_to",
+            "anchor",
+            "direction"
+          ],
+          "properties": {
+            "source_from": {
+              "type": "string",
+              "description": "5-char anchor of the FIRST source line."
+            },
+            "source_to": {
+              "type": "string",
+              "description": "5-char anchor of the LAST source line."
+            },
+            "anchor": {
+              "type": "string",
+              "description": "5-char anchor of the destination line; the block lands before or after it and it may live in another file."
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "after",
+                "before"
+              ],
+              "description": "\"after\" places the block below the anchor line, \"before\" above it"
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "grep",
+        "description": "Search text files with ripgrep. Hits come back as `lineNumber:│ anchor│content` rows and context lines as `lineNumber-│ anchor│content`, editable with replace, insert, copy, or move without a new read. A row returned by `grep` is already a served row, so you do not need to `read` the file to edit that line. The `=== path ===` header and line numbers locate the match. Patterns use ripgrep's Rust regex syntax (no backreferences or look-around) through a linear-time engine. Searches respect `.gitignore`, always skip `.git`, and skip binary and image files silently. A match over 500 bytes is shown as a `...` fragment around the hit, but its anchor still covers the whole line. When output is cut by the match limit, raise `limit`; when cut by rows or bytes, refine `pattern` or narrow `path`.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "pattern"
+          ],
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "Search pattern (regex or literal string)"
+            },
+            "path": {
+              "type": "string",
+              "description": "Directory or file to search (default: current directory)"
+            },
+            "glob": {
+              "type": "string",
+              "description": "Filter files by glob; `*` crosses directories, e.g. `*.ts`. A leading `/` is ignored; relative to the search root or cwd."
+            },
+            "ignoreCase": {
+              "type": "boolean",
+              "description": "Case-insensitive search"
+            },
+            "literal": {
+              "type": "boolean",
+              "description": "Treat pattern as literal text instead of regex"
+            },
+            "context": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Lines of context before and after each match"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum number of matched lines to return (default 100)"
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "undo_last_change",
+        "description": "Undo the last replace, replace_match, insert, copy, or move on a file, restoring the previous content, BOM, and line endings. If the file changed since that edit, the undo is refused and the file is left untouched; a file deleted since the edit is restored.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path to the file to undo"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "sandbox_status",
+        "description": "Inspect sandbox enabled state, effective allow and deny rules, and session-only grants. Relative filesystem rules are resolved against cwd. Write access also grants read access; denyWrite and deniedDomains override allows, while allowRead overrides denyRead.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "sandbox_request_access",
+        "description": "Request user approval for read or write access to a path, or network access to a domain. Use sandbox_status to inspect current permissions. Already-allowed access does not prompt.",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "kind",
+            "target",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "read"
+                },
+                {
+                  "type": "string",
+                  "const": "write"
+                },
+                {
+                  "type": "string",
+                  "const": "domain"
+                }
+              ]
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Filesystem path or domain hostname"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Why this access is needed"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

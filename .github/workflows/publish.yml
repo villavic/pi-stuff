@@ -2,8 +2,9 @@ name: Publish
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    paths:
+      - "extensions/pi-prompt-rewriter/**"
   workflow_dispatch:
     inputs:
       extension:
@@ -18,6 +19,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extensions/pi-prompt-rewriter
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,30 +29,11 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
+          cache-dependency-path: extensions/pi-prompt-rewriter/package-lock.json
       - run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Publish extensions
-        run: |
-          set -euo pipefail
-          published=0
-          for dir in extensions/*/; do
-            name=$(basename "$dir")
-            if [ -n "${{ github.event.inputs.extension }}" ] && [ "$name" != "${{ github.event.inputs.extension }}" ]; then
-              continue
-            fi
-            if [ ! -f "$dir/package.json" ]; then
-              echo "skip $name (no package.json)"
-              continue
-            fi
-            if ! node -e "const p=require('./$dir/package.json'); process.exit(p.pi&&p.pi.extensions?0:1)" 2>/dev/null; then
-              echo "skip $name (not a pi package)"
-              continue
-            fi
-            echo "publishing $name"
-            (cd "$dir" && npm publish --provenance --access public)
-            published=$((published+1))
-          done
-          echo "published $published extension(s)"
+      - name: Publish
+        run: npm publish --provenance --access public

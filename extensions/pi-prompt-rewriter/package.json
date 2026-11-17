@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "Surgical, config-driven rewriting of the prompt payload: system prompt text, tool descriptions, and tool parameter descriptions, from rules in config.json, hot-reloaded",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/villavic/pi-stuff.git",
+    "directory": "extensions/pi-prompt-rewriter"
+  },
   "license": "MIT",
   "keywords": [
     "pi-package",

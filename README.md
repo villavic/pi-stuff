@@ -4,8 +4,8 @@ Personal Pi coding-agent extensions.
 
 ## CI
 
-[![CI](https://github.com/thepaya/pi-stuff/actions/workflows/ci.yml/badge.svg)](https://github.com/thepaya/pi-stuff/actions/workflows/ci.yml)
-[![Publish](https://github.com/thepaya/pi-stuff/actions/workflows/publish.yml/badge.svg)](https://github.com/thepaya/pi-stuff/actions/workflows/publish.yml)
+[![CI](https://github.com/villavic/pi-stuff/actions/workflows/ci.yml/badge.svg)](https://github.com/villavic/pi-stuff/actions/workflows/ci.yml)
+[![Publish](https://github.com/villavic/pi-stuff/actions/workflows/publish.yml/badge.svg)](https://github.com/villavic/pi-stuff/actions/workflows/publish.yml)
 
 ## Extensions
 

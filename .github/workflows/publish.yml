@@ -34,4 +34,4 @@ jobs:
       - run: npm ci
 
       - name: Publish
-        run: npm publish --provenance --access public
+        run: npm stage publish --provenance --access public

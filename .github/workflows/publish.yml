@@ -1,0 +1,52 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      extension:
+        description: "Extension directory name to publish (e.g. pi-prompt-rewriter). Leave empty for all."
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Publish extensions
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          published=0
+          for dir in extensions/*/; do
+            name=$(basename "$dir")
+            if [ -n "${{ github.event.inputs.extension }}" ] && [ "$name" != "${{ github.event.inputs.extension }}" ]; then
+              continue
+            fi
+            if [ ! -f "$dir/package.json" ]; then
+              echo "skip $name (no package.json)"
+              continue
+            fi
+            if ! node -e "const p=require('./$dir/package.json'); process.exit(p.pi&&p.pi.extensions?0:1)" 2>/dev/null; then
+              echo "skip $name (not a pi package)"
+              continue
+            fi
+            echo "publishing $name"
+            (cd "$dir" && npm publish --access public)
+            published=$((published+1))
+          done
+          echo "published $published extension(s)"

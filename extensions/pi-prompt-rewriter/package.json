@@ -1,0 +1,32 @@
+{
+  "name": "pi-prompt-rewriter",
+  "version": "0.1.0",
+  "description": "Surgical, config-driven rewriting of the prompt payload: system prompt text, tool descriptions, and tool parameter descriptions, from rules in config.json, hot-reloaded",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "system-prompt",
+    "tool-description"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "changelogPath": "./CHANGELOG.md"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "typescript": "^5.9.3"
+  }
+}

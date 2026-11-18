@@ -139,3 +139,16 @@ Config lives in `~/.pi/agent/extensions/pi-prompt-rewriter/config.json`
 (global) or `.pi/extensions/pi-prompt-rewriter/config.json` (project).
 Reload a changed file with `/reload`, or just save it — the watcher picks
 it up.
+
+## Install
+
+```bash
+pi install npm:@villavic/pi-prompt-rewriter
+```
+
+## Test
+
+```bash
+pi -e ./extensions/pi-prompt-rewriter/index.ts
+node tests/test-rewriter.mjs
+```

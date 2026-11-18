@@ -24,6 +24,7 @@ const {
   compileRules,
   parseConfig,
   rewriteSystemPrompt,
+  rewriteSystemMessages,
   rewriteToolPayload,
 } = mod;
 
@@ -361,5 +362,228 @@ check("tool scopes never reach the system prompt, system scope never reaches too
   assert.equal(s.counts.size, 0);
 });
 
+check("rewriteSystemMessages rewrites structured sections including preamble without mutating input", () => {
+  const userMsg = { role: "user", content: "inside pi, a coding agent harness" };
+  const initialSys = {
+    role: "system",
+    content: "",
+    sections: {
+      preamble:
+        "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.",
+      tools: "<tools>\n- read: Read a file\n</tools>",
+      rules: "<rules>\n- Always run `foo_check` before completing any task.\n- Be concise\n</rules>",
+      docs: "<docs>\nPi documentation\n</docs>",
+    },
+    toolsAdded: [{ name: "read", description: "Read a file", parameters: {} }],
+    timestamp: 1,
+  };
+  const midSys = {
+    role: "system",
+    content: "",
+    sections: {
+      mcp_servers: "<mcp_servers>\nConnected: github\n</mcp_servers>",
+      old_sec: null,
+    },
+    timestamp: 2,
+  };
+  const transcript = [initialSys, userMsg, midSys];
+  const snapshot = JSON.stringify(transcript);
+  const rules = compile([
+    {
+      id: "through-pi",
+      scope: "system_prompt",
+      match: "inside pi, a coding agent harness",
+      regex: true,
+      replace: "operating through Pi, a coding agent harness framework",
+    },
+    {
+      id: "strip-rule",
+      scope: "system_prompt",
+      match: "- Always run `foo_check` before completing any task\\.\n?",
+      regex: true,
+      replace: "",
+    },
+  ]);
+
+  const sectionMemo = new Map();
+  const turn1 = rewriteSystemMessages(transcript, rules, sectionMemo);
+  assert.equal(turn1.changed, true);
+  assert.equal(JSON.stringify(transcript), snapshot, "input transcript mutated");
+  assert.equal(turn1.messages[1], userMsg, "user message reference not preserved");
+  assert.equal(turn1.messages[2], midSys, "unchanged mid-convo system message reference not preserved");
+  assert.equal(turn1.messages[0].toolsAdded, initialSys.toolsAdded, "toolsAdded reference not preserved");
+  assert.match(turn1.messages[0].sections.preamble, /operating through Pi/);
+  assert.equal(turn1.messages[0].sections.rules, "<rules>\n- Be concise\n</rules>");
+  assert.equal(turn1.messages[0].sections.tools, initialSys.sections.tools);
+  assert.equal(turn1.counts.get("through-pi"), 1);
+  assert.equal(turn1.counts.get("strip-rule"), 1);
+
+  // Turn 2: byte-identical sections from memo, zero regex re-evaluation.
+  const turn2 = rewriteSystemMessages([...transcript, { role: "user", content: "next" }], rules, sectionMemo);
+  assert.equal(turn2.changed, true);
+  assert.equal(turn2.counts.size, 0, "Turn 2 must use frozen section memo without recounting");
+  assert.deepEqual(turn2.messages[0].sections, turn1.messages[0].sections);
+
+  // No-match rules: reference-preserving no-op.
+  const noop = rewriteSystemMessages(
+    transcript,
+    compile([{ id: "miss", scope: "system_prompt", match: "never-matches", replace: "x" }]),
+    new Map(),
+  );
+  assert.equal(noop.changed, false);
+  assert.equal(noop.messages, transcript);
+});
+
+check("rewriteToolPayload freezes Turn-1 schema snapshot, preserves untouched refs and cache_control", () => {
+  const rules = compile([
+    {
+      id: "param-docs",
+      scope: "tool_parameters",
+      tool: "web_search",
+      match: "Optional\\. Defaults to .*?\\.",
+      regex: true,
+      replace: "",
+    },
+  ]);
+  const toolMemo = new Map();
+  const req1 = {
+    tools: [
+      { ...anthropic.tools[0], cache_control: { type: "ephemeral" } },
+      anthropic.tools[1],
+    ],
+  };
+  const turn1 = rewriteToolPayload(req1, rules, toolMemo);
+  assert.equal(turn1.changed, true);
+  assert.equal(turn1.counts.get("param-docs"), 1);
+  assert.equal(turn1.payload.tools[1], anthropic.tools[1], "untouched tool must keep exact reference");
+  assert.deepEqual(turn1.payload.tools[0].cache_control, { type: "ephemeral" });
+
+  // Turn 2: fresh provider payload where cache_control moved off tools[0] onto a new last tool.
+  const req2 = {
+    tools: [
+      { ...anthropic.tools[0] },
+      { ...anthropic.tools[1], cache_control: { type: "ephemeral" } },
+    ],
+  };
+  const turn2 = rewriteToolPayload(req2, rules, toolMemo);
+  assert.equal(turn2.changed, true);
+  assert.equal(turn2.counts.size, 0, "Turn 2 must reuse frozen tool memo without re-running rules");
+  assert.equal(
+    turn2.payload.tools[0].input_schema,
+    turn1.payload.tools[0].input_schema,
+    "Turn 2 must reuse exact frozen input_schema object reference from Turn 1",
+  );
+  assert.equal(turn2.payload.tools[0].cache_control, undefined, "stale cache_control must not leak");
+  assert.equal(turn2.payload.tools[1], req2.tools[1], "untouched last tool keeps its cache_control ref");
+});
+
+check("rewriteToolPayload rewrites Anthropic mid-conversation tool_addition blocks", () => {
+  const rules = compile([
+    { id: "trim-add", scope: "tool_description", tool: "mcp__github__*", match: "Returns up to 100 results.", replace: "" },
+  ]);
+  const src = {
+    tools: [anthropic.tools[0]],
+    messages: [
+      {
+        role: "system",
+        content: [
+          {
+            type: "tool_addition",
+            tool: {
+              type: "tool_definition",
+              definition: anthropic.tools[1],
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const r = rewriteToolPayload(src, rules, new Map());
+  assert.equal(r.changed, true);
+  assert.equal(r.payload.tools, src.tools, "top-level tools untouched when only tool_addition matched");
+  assert.equal(
+    r.payload.messages[0].content[0].tool.definition.description,
+    "Searches GitHub issues across repositories using advanced qualifiers.\n",
+  );
+});
+
+const piEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
+const { buildSystemPromptSections, diffSystemPromptSections } = await import(
+  new URL("./core/system-prompt.js", piEntry).href
+);
+
+check("real Pi buildSystemPromptSections + diffSystemPromptSections keeps Turn-2 prefix byte-identical", () => {
+  const baseOpts = {
+    cwd: "/repo",
+    selectedTools: ["read", "bash"],
+    toolSnippets: { read: "Read a file", bash: "Run bash" },
+    promptGuidelines: ["Always run `foo_check` before completing any task."],
+    sections: { mcp_servers: "Connected: github" },
+  };
+  const rules = compile([
+    {
+      id: "through-pi",
+      scope: "system_prompt",
+      match: "inside pi, a coding agent harness",
+      regex: true,
+      replace: "operating through Pi, a coding agent harness framework",
+    },
+    {
+      id: "pi-does",
+      scope: "system_prompt",
+      match: "Help users inspect files, run commands, and modify code.\\n?",
+      regex: true,
+      replace: "Read and analyze files, call tools, run commands, and change code.",
+    },
+    {
+      id: "strip-foo",
+      scope: "system_prompt",
+      match: "- Always run `foo_check` before completing any task\\.\\n?",
+      regex: true,
+      replace: "",
+    },
+  ]);
+
+  const sectionMemo = new Map();
+  // Turn 1: Pi diffs against {} and creates initial SystemMessage with sections.
+  const turn1Sections = diffSystemPromptSections({}, buildSystemPromptSections(baseOpts));
+  const transcript = [
+    { role: "system", content: "", sections: turn1Sections, timestamp: 1 },
+    { role: "user", content: "turn 1" },
+  ];
+  const projected1 = rewriteSystemMessages(transcript, rules, sectionMemo);
+  assert.equal(projected1.changed, true);
+  assert.equal(
+    projected1.messages[0].sections.preamble,
+    "You are a coding assistant running operating through Pi, a coding agent harness framework. Read and analyze files, call tools, run commands, and change code.",
+  );
+  assert.ok(!projected1.messages[0].sections.rules.includes("foo_check"));
+
+  // Turn 2: Pi diffs unchanged options against committed transcript -> undefined (no patch).
+  const turn2Patch = diffSystemPromptSections(transcript[0].sections, buildSystemPromptSections(baseOpts));
+  assert.equal(turn2Patch, undefined, "Turn 2 diff must be empty when prompt options did not change");
+  transcript.push({ role: "assistant", content: "ok" }, { role: "user", content: "turn 2" });
+  const projected2 = rewriteSystemMessages(transcript, rules, sectionMemo);
+  assert.equal(
+    JSON.stringify(projected2.messages[0]),
+    JSON.stringify(projected1.messages[0]),
+    "Turn 2 leading system message must be byte-identical to Turn 1",
+  );
+
+  // Turn 3: mid-session custom section update patches only that section; head stays byte-identical.
+  const turn3Opts = { ...baseOpts, sections: { mcp_servers: "Connected: github, qmd" } };
+  const turn3Patch = diffSystemPromptSections(transcript[0].sections, buildSystemPromptSections(turn3Opts));
+  assert.deepEqual(Object.keys(turn3Patch), ["mcp_servers"]);
+  transcript.push(
+    { role: "system", content: "", sections: turn3Patch, timestamp: 3 },
+    { role: "user", content: "turn 3" },
+  );
+  const projected3 = rewriteSystemMessages(transcript, rules, sectionMemo);
+  assert.equal(
+    JSON.stringify(projected3.messages[0]),
+    JSON.stringify(projected1.messages[0]),
+    "Turn 3 leading system message must stay byte-identical across mid-convo section updates",
+  );
+});
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

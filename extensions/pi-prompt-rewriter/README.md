@@ -66,8 +66,8 @@ Example:
 
 | `scope` in `config.json` | Where it applies | What it catches |
 |---|---|---|
-| `system_prompt` | `before_agent_start` — reads `event.systemPrompt` (the rendered prompt) and returns `{ systemPrompt }` | The AGENTS.md system prompt, skill descriptions, `toolSnippets`, and each extension's `promptGuidelines` — anything in the rendered text. |
-| `tool_description` | `before_provider_request` — normalizes `tool.description` (Anthropic messages, OpenAI Responses) and `tool.function.description` (OpenAI chat) | The `description` of any built-in, extension, or MCP tool, whatever the provider. |
+| `system_prompt` | `context_with_system` — rewrites each string section on `SystemMessage.sections` (and `content` when present) without setting `forceSystemPrompt` | The preamble, `docs`, `rules` (`promptGuidelines` / `toolGuidelines`), `tools` (`toolSnippets`), `project_context` (`AGENTS.md`), `skills`, and custom extension sections. |
+| `tool_description` | `before_provider_request` — rewrites `tool.description` (Anthropic messages, OpenAI Responses), `tool.function.description` (OpenAI chat), and Anthropic `tool_addition` blocks | The `description` of any built-in, extension, or MCP tool, whatever the provider. |
 | `tool_parameters` | `before_provider_request` — recursively walks `input_schema` / `parameters` JSON schema nodes and rewrites every string `description` field | Verbose per-argument instructions and multi-line examples inside tool parameter schemas. |
 
 ## Rule fields
@@ -112,13 +112,20 @@ the per-rule hit count for the session. To see the result in the payload
 itself, capture it with `extensions/prompt-capture/index.ts` and re-run
 the rules against the capture: `node tests/test-rewriter.mjs`.
 
-## Cost
+## Prompt caching
 
-Returning `systemPrompt` from `before_agent_start` replaces the whole
-prompt for a turn and bypasses the per-section diff Pi uses for prompt
-caching, so a `system_prompt` rule costs a full prompt-cache miss on
-every turn. Tool-scope rules have the same effect on the tool
-declarations. Keep the rule set small and specific.
+`system_prompt` rules rewrite `SystemMessage.sections.*` in
+`context_with_system` instead of returning `{ systemPrompt }` from
+`before_agent_start`. Because `forceSystemPrompt` is never set, Pi keeps
+its structured section diff (`diffSystemPromptSections`) and
+mid-conversation section updates intact.
+
+On Turn 1 of a session, rewritten section strings and rewritten tool
+schemas are snapshotted in session maps. Turn 2+ reuses those frozen
+snapshots in O(1) without re-evaluating rules or rebuilding schemas, and
+returns a reference-preserving no-op when nothing matches — yielding
+`cacheWrite` once on Turn 1 and `cacheRead` on Turn 2+ (until rules are
+edited or reloaded).
 
 ## Install
 

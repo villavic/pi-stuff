@@ -3,10 +3,10 @@
  *
  * Builds a stub ExtensionAPI that records the handlers, sets
  * PI_CODING_AGENT_DIR to a throwaway root under lab/tmp/, and runs
- * session_start, before_agent_start, before_provider_request, a real
+ * session_start, context_with_system, before_provider_request, a real
  * hot-reload through fs.watch, and session_shutdown.
  *
- * Run: node lab/tmp/test-extension-wiring.mjs
+ * Run: node tests/test-extension-wiring.mjs
  */
 
 import {
@@ -125,15 +125,24 @@ async function waitFor(predicate, ms = 3000) {
   return predicate();
 }
 
-const sysPrompt = () =>
-  "Header\n- Always run `foo_check` before completing any task.\nTail";
-
+const sysMessages = () => [
+  {
+    role: "system",
+    content: "",
+    sections: {
+      preamble: "Header",
+      rules: "<rules>\n- Always run `foo_check` before completing any task.\n- Keep it tidy.\n</rules>",
+    },
+    timestamp: 1,
+  },
+  { role: "user", content: "hi" },
+];
 extension(pi);
 
 await check("registered the handlers and the status command", () => {
   assert.deepEqual(
     [...handlers.keys()].sort(),
-    ["before_agent_start", "before_provider_request", "session_shutdown", "session_start"],
+    ["before_provider_request", "context_with_system", "session_shutdown", "session_start"],
   );
   assert.ok(commands.has("prompt-rewriter"));
 });
@@ -150,15 +159,16 @@ await check("session_start loads the rules and reports once", async () => {
   assert.equal(notices[0].level, "info");
 });
 
-await check("system_prompt rule rewrites the rendered prompt", async () => {
-  const result = await handlers.get("before_agent_start")(
-    { prompt: "hi", systemPrompt: sysPrompt(), systemPromptOptions: {} },
-    ctx,
-  );
-  assert.equal(result.systemPrompt, "Header\nTail");
+await check("system_prompt rule rewrites structured sections in context_with_system", async () => {
+  const input = sysMessages();
+  const result = await handlers.get("context_with_system")({ messages: input }, ctx);
+  assert.equal(result.messages[0].sections.preamble, "Header");
+  assert.equal(result.messages[0].sections.rules, "<rules>\n- Keep it tidy.\n</rules>");
+  assert.equal(result.messages[1], input[1], "user message reference preserved");
 });
 
-await check("tool_description rule rewrites the matching tool only", async () => {
+await check("tool_description rule rewrites matching tool and freezes Turn-1 snapshot", async () => {
+  const p1 = payload();
   const result = await handlers.get("before_provider_request")(
     {
       type: "llm",
@@ -166,15 +176,31 @@ await check("tool_description rule rewrites the matching tool only", async () =>
       provider: "openai-completions",
       model: { id: "test-model", api: "openai-completions", provider: "test" },
       modelRequestIndex: 0,
-      payload: payload(),
+      payload: p1,
     },
     ctx,
   );
   const tools = result.tools;
   assert.equal(tools[0].function.description, "Get the signed-in user.");
-  assert.equal(tools[1].function.description, "Read a file as anchor rows.");
+  assert.equal(tools[1], p1.tools[1], "untouched tool reference preserved");
   assert.equal(tools[0].function.parameters.properties.pretty.description,
     "Pretty output. Optional. Defaults to true.");
+
+  // Turn 2: reuses frozen snapshot without incrementing hit counts again.
+  const sys2 = await handlers.get("context_with_system")({ messages: sysMessages() }, ctx);
+  assert.equal(sys2.messages[0].sections.rules, "<rules>\n- Keep it tidy.\n</rules>");
+  const result2 = await handlers.get("before_provider_request")(
+    {
+      type: "llm",
+      sessionId: "s1",
+      provider: "openai-completions",
+      model: { id: "test-model", api: "openai-completions", provider: "test" },
+      modelRequestIndex: 1,
+      payload: payload(),
+    },
+    ctx,
+  );
+  assert.equal(result2.tools[0].function.description, "Get the signed-in user.");
 });
 
 await check("status command lists the rules and their hit counts", async () => {
@@ -217,11 +243,15 @@ await check("a project config replaces the global rules wholesale", async () => 
     notices.some((n) => /reloaded/.test(n.text) && /project/.test(n.text)),
   );
   assert.ok(seen, "no project reload notice");
-  const sys = await handlers.get("before_agent_start")(
-    { prompt: "hi", systemPrompt: sysPrompt(), systemPromptOptions: {} },
+  const sys = await handlers.get("context_with_system")(
+    { messages: sysMessages() },
     ctx,
   );
-  assert.equal(sys.systemPrompt, `Title\n- Always run \`foo_check\` before completing any task.\nTail`);
+  assert.equal(sys.messages[0].sections.preamble, "Title");
+  assert.equal(
+    sys.messages[0].sections.rules,
+    "<rules>\n- Always run `foo_check` before completing any task.\n- Keep it tidy.\n</rules>",
+  );
   const req = await handlers.get("before_provider_request")(
     { type: "llm", sessionId: "s1", provider: "p", model: {}, modelRequestIndex: 0, payload: payload() },
     ctx,
@@ -236,11 +266,11 @@ await check("unparseable config keeps the previous rules and warns", async () =>
     notices.slice(marker).some((n) => /kept the previous rules/.test(n.text)),
   );
   assert.ok(seen, "no kept-previous-rules notice");
-  const sys = await handlers.get("before_agent_start")(
-    { prompt: "hi", systemPrompt: sysPrompt(), systemPromptOptions: {} },
+  const sys = await handlers.get("context_with_system")(
+    { messages: sysMessages() },
     ctx,
   );
-  assert.equal(sys.systemPrompt, `Title\n- Always run \`foo_check\` before completing any task.\nTail`);
+  assert.equal(sys.messages[0].sections.preamble, "Title");
 });
 
 await check("session_shutdown closes the watchers", async () => {
@@ -262,8 +292,8 @@ await check("a missing config means no rules, not an error", async () => {
   const quiet = [];
   await fresh.get("session_start")({}, { cwd: PROJECT, ui: { notify: (t, l) => quiet.push({ t, l }) } });
   assert.match(quiet[0].t, /rules: 0/);
-  const sys = await fresh.get("before_agent_start")(
-    { prompt: "hi", systemPrompt: sysPrompt(), systemPromptOptions: {} },
+  const sys = await fresh.get("context_with_system")(
+    { messages: sysMessages() },
     { cwd: PROJECT, ui: { notify: () => {} } },
   );
   assert.equal(sys, undefined);

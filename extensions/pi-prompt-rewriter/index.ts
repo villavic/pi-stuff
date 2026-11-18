@@ -1,7 +1,7 @@
 /**
  * pi-prompt-rewriter — surgical text rewriting of the prompt payload.
  *
- * The workflow: capture what Pi really sends (see lab/prompt-capture.ts),
+ * The workflow: capture what Pi really sends (extensions/prompt-capture/index.ts),
  * copy the unwanted text out of it, wrap it in one
  * `{ scope, tool?, match, replace }` entry in `config.json`, save, and the
  * next request carries the replacement. No code changes per rule.
@@ -9,35 +9,37 @@
  * Config lives in this extension's own directory, at the same paths:
  *   global   <agentDir>/extensions/pi-prompt-rewriter/config.json
  *   project  <cwd>/.pi/extensions/pi-prompt-rewriter/config.json
- * `agentDir` comes from `getAgentDir()`, which honors
- * `PI_CODING_AGENT_DIR`, so the isolated lab resolves inside its own root.
+ * `agentDir` comes from `getAgentDir()`, which honors `PI_CODING_AGENT_DIR`.
  * A project config replaces the global rule list wholesale. A missing file
  * is silent; a malformed one warns and keeps the last good rules. Both files
  * are watched, so an edit lands on the next request.
  *
  * Three scopes, each aimed at one Pi surface:
  *
- *   system_prompt     before_agent_start: reads `event.systemPrompt` (the
- *                     rendered prompt) and returns `{ systemPrompt }`.
+ *   system_prompt     context_with_system: rewrites each string section on
+ *                     `SystemMessage.sections` (and `content` when present)
+ *                     without setting `forceSystemPrompt`, preserving Pi's
+ *                     per-section diff and mid-conversation section updates.
  *   tool_description  before_provider_request: `tools[].description`
- *                     (Anthropic messages, OpenAI Responses) and
- *                     `tools[].function.description` (OpenAI chat).
+ *                     (Anthropic messages, OpenAI Responses),
+ *                     `tools[].function.description` (OpenAI chat), and
+ *                     Anthropic `tool_addition` definitions.
  *   tool_parameters   before_provider_request: every `"description"` string
  *                     inside `input_schema` / `parameters`, walked
  *                     recursively.
  *
- * Invariant: a rule can only rewrite the text of a `description` string. It
- * never deletes a key, an entry, a parameter, or a tool, and a tool scope
- * never touches the system prompt.
+ * Prompt-cache behavior: Turn 1 evaluates active rules once and snapshots the
+ * rewritten section strings and rewritten tool schemas in session maps; Turn 2+
+ * reuses the frozen snapshots in O(1) with reference-preserving no-ops when
+ * nothing matches, yielding `cacheWrite` on Turn 1 and `cacheRead` on Turn 2+.
+ *
+ * Invariant: a rule can only rewrite prose strings. Tool rules never delete a
+ * key, an entry, a parameter, or a tool, and a tool scope never touches the
+ * system prompt.
  *
  * Tool names are matched exactly as they appear in the payload. MCP tools
  * are `mcp__<server>__<tool>` (docs/mcp.md), so `*` globs are
  * `mcp__github__*`, `mcp__*`.
- *
- * Cost of a system_prompt rule: returning `systemPrompt` replaces the prompt
- * for every turn and bypasses the per-section diff Pi uses for prompt
- * caching, so each such turn pays a full prompt-cache miss. Tool-scope rules
- * have the same effect on the tool declarations. Keep the set small.
  */
 
 import {
@@ -82,6 +84,21 @@ export interface ParseResult {
   issues: string[];
 }
 
+export interface CachedTextRewrite {
+  text: string;
+  changed: boolean;
+}
+
+export interface CachedToolRewrite {
+  changed: boolean;
+  topDescription?: string;
+  topInputSchema?: unknown;
+  topParameters?: unknown;
+  fnDescription?: string;
+  fnInputSchema?: unknown;
+  fnParameters?: unknown;
+}
+
 type Obj = Record<string, unknown>;
 
 function isObj(value: unknown): value is Obj {
@@ -103,6 +120,15 @@ function globToRegExp(pattern: string): RegExp {
     body += char === "*" ? ".*" : escapeRegExp(char);
   }
   return new RegExp(`^${body}$`);
+}
+
+function mergeCounts(
+  target: Map<string, number>,
+  source: Map<string, number>,
+): void {
+  for (const [id, hits] of source) {
+    target.set(id, (target.get(id) ?? 0) + hits);
+  }
 }
 
 /** Drop unknown fields and report each rule that has no usable shape. */
@@ -173,7 +199,9 @@ export function compileRules(rules: Rule[]): {
     let re: RegExp | undefined;
     let error: string | undefined;
     try {
-      re = rule.regex ? new RegExp(rule.match, flags) : new RegExp(escapeRegExp(rule.match), "g");
+      re = rule.regex
+        ? new RegExp(rule.match, flags)
+        : new RegExp(escapeRegExp(rule.match), "g");
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
       issues.push(`${rule.id}: bad pattern (${error})`);
@@ -200,7 +228,10 @@ function applyRule(
   return { text: text.replace(rule.re, () => rule.replace), hits };
 }
 
-function ruleAppliesToTool(rule: CompiledRule, name: string | undefined): boolean {
+function ruleAppliesToTool(
+  rule: CompiledRule,
+  name: string | undefined,
+): boolean {
   if (rule.toolRe === undefined) return true;
   return name !== undefined && rule.toolRe.test(name);
 }
@@ -260,77 +291,358 @@ function rewriteSchemaDescriptions(
 }
 
 /**
+ * Shallow-wrap a live tool entry with frozen Turn-1 description/schema values,
+ * preserving exact property order and per-request fields like `cache_control`.
+ */
+function applyCachedTool(entry: Obj, cached: CachedToolRewrite): Obj {
+  const next: Obj = { ...entry };
+  if (isObj(entry.function)) {
+    const nextFn: Obj = { ...entry.function };
+    if (cached.fnDescription !== undefined) {
+      nextFn.description = cached.fnDescription;
+    }
+    if (cached.fnInputSchema !== undefined) {
+      nextFn.input_schema = cached.fnInputSchema;
+    }
+    if (cached.fnParameters !== undefined) {
+      nextFn.parameters = cached.fnParameters;
+    }
+    next.function = nextFn;
+  } else if (cached.topDescription !== undefined) {
+    next.description = cached.topDescription;
+  }
+  if (cached.topInputSchema !== undefined) {
+    next.input_schema = cached.topInputSchema;
+  }
+  if (cached.topParameters !== undefined) {
+    next.parameters = cached.topParameters;
+  }
+  return next;
+}
+
+function rewriteSingleTool(
+  entry: unknown,
+  descRules: CompiledRule[],
+  paramRules: CompiledRule[],
+  memo: Map<string, CachedToolRewrite> | undefined,
+  counts: Map<string, number>,
+): { entry: unknown; changed: boolean } | null {
+  if (!isObj(entry)) return { entry, changed: false };
+  const name = toolName(entry);
+  const myDesc = descRules.filter((rule) => ruleAppliesToTool(rule, name));
+  const myParam = paramRules.filter((rule) => ruleAppliesToTool(rule, name));
+  if (myDesc.length === 0 && myParam.length === 0) {
+    return { entry, changed: false };
+  }
+
+  const fn = isObj(entry.function) ? entry.function : undefined;
+  const holder = fn ?? entry;
+  let cacheKey: string | undefined;
+  if (memo !== undefined) {
+    const rawDesc =
+      typeof holder.description === "string" ? holder.description : "\0";
+    let schemaSig = "";
+    if (myParam.length > 0) {
+      try {
+        schemaSig = JSON.stringify([
+          entry.input_schema,
+          entry.parameters,
+          fn?.input_schema,
+          fn?.parameters,
+        ]);
+      } catch {
+        return null;
+      }
+    }
+    cacheKey = `${fn ? 1 : 0}\0${name ?? ""}\0${rawDesc}\0${schemaSig}`;
+    const hit = memo.get(cacheKey);
+    if (hit !== undefined) {
+      return hit.changed
+        ? { entry: applyCachedTool(entry, hit), changed: true }
+        : { entry, changed: false };
+    }
+  }
+
+  let cloned: Obj;
+  try {
+    cloned = structuredClone(entry);
+  } catch {
+    return null;
+  }
+
+  const entryCounts = new Map<string, number>();
+  const clonedHolder = descriptionHolder(cloned);
+  if (typeof clonedHolder.description === "string") {
+    let text = clonedHolder.description;
+    for (const rule of myDesc) {
+      const result = applyRule(text, rule);
+      text = result.text;
+      if (result.hits > 0) {
+        entryCounts.set(rule.id, (entryCounts.get(rule.id) ?? 0) + result.hits);
+      }
+    }
+    clonedHolder.description = text;
+  }
+
+  if (myParam.length > 0) {
+    for (const schema of schemaNodes(cloned)) {
+      rewriteSchemaDescriptions(schema, myParam, entryCounts);
+    }
+  }
+
+  if (entryCounts.size === 0) {
+    memo?.set(cacheKey!, { changed: false });
+    return { entry, changed: false };
+  }
+
+  mergeCounts(counts, entryCounts);
+  const clonedFn = isObj(cloned.function) ? cloned.function : undefined;
+  const snapshot: CachedToolRewrite = {
+    changed: true,
+    topDescription:
+      !clonedFn && typeof cloned.description === "string"
+        ? cloned.description
+        : undefined,
+    topInputSchema: isObj(cloned.input_schema)
+      ? cloned.input_schema
+      : undefined,
+    topParameters: isObj(cloned.parameters) ? cloned.parameters : undefined,
+    fnDescription:
+      clonedFn && typeof clonedFn.description === "string"
+        ? clonedFn.description
+        : undefined,
+    fnInputSchema:
+      clonedFn && isObj(clonedFn.input_schema)
+        ? clonedFn.input_schema
+        : undefined,
+    fnParameters:
+      clonedFn && isObj(clonedFn.parameters) ? clonedFn.parameters : undefined,
+  };
+  if (memo !== undefined && cacheKey !== undefined) {
+    memo.set(cacheKey, snapshot);
+  }
+  return { entry: applyCachedTool(entry, snapshot), changed: true };
+}
+
+/**
  * Rewrite tool prose in a provider payload. Accepts the shapes in the wild:
- * Anthropic messages (`description`, `input_schema`), OpenAI Responses
- * (`description`, `parameters`), OpenAI chat (`function.description`,
- * `function.parameters`). Returns the same payload object when nothing
- * matched, so a rule set for another provider costs nothing.
+ * Anthropic messages (`description`, `input_schema` and `tool_addition`
+ * blocks), OpenAI Responses (`description`, `parameters`), and OpenAI chat
+ * (`function.description`, `function.parameters`). Returns the exact input
+ * payload reference when nothing matched, and reuses Turn-1 frozen schema
+ * snapshots when `memo` is supplied.
  */
 export function rewriteToolPayload(
   payload: unknown,
   rules: CompiledRule[],
+  memo?: Map<string, CachedToolRewrite>,
 ): { payload: unknown; changed: boolean; counts: Map<string, number> } {
   const none = { payload, changed: false, counts: new Map<string, number>() };
-  if (!isObj(payload) || !Array.isArray(payload.tools)) return none;
+  if (!isObj(payload)) return none;
 
   const scoped = rules.filter((rule) => !rule.error && rule.re);
   const descRules = scoped.filter((rule) => rule.scope === "tool_description");
   const paramRules = scoped.filter((rule) => rule.scope === "tool_parameters");
   if (descRules.length === 0 && paramRules.length === 0) return none;
 
-  let tools: unknown[];
-  try {
-    tools = structuredClone(payload.tools);
-  } catch {
-    // Payloads carry provider objects that structuredClone refuses; leave
-    // the request alone rather than risk mutating the live payload.
-    return none;
-  }
+  const hasTools = Array.isArray(payload.tools);
+  const hasMessages = Array.isArray(payload.messages);
+  if (!hasTools && !hasMessages) return none;
 
   const counts = new Map<string, number>();
-  for (const entry of tools) {
-    if (!isObj(entry)) continue;
-    const name = toolName(entry);
+  let toolsChanged = false;
+  let nextTools: unknown[] | undefined;
 
-    const holder = descriptionHolder(entry);
-    if (typeof holder.description === "string") {
-      let text = holder.description;
-      for (const rule of descRules) {
-        if (!ruleAppliesToTool(rule, name)) continue;
-        const result = applyRule(text, rule);
-        text = result.text;
-        if (result.hits > 0) {
-          counts.set(rule.id, (counts.get(rule.id) ?? 0) + result.hits);
-        }
-      }
-      holder.description = text;
+  if (Array.isArray(payload.tools)) {
+    const tools = payload.tools;
+    const out = new Array<unknown>(tools.length);
+    for (let i = 0; i < tools.length; i++) {
+      const res = rewriteSingleTool(
+        tools[i],
+        descRules,
+        paramRules,
+        memo,
+        counts,
+      );
+      if (res === null) return none;
+      out[i] = res.entry;
+      if (res.changed) toolsChanged = true;
     }
-
-    const toolParamRules = paramRules.filter((rule) => ruleAppliesToTool(rule, name));
-    if (toolParamRules.length > 0) {
-      for (const schema of schemaNodes(entry)) {
-        rewriteSchemaDescriptions(schema, toolParamRules, counts);
-      }
-    }
+    if (toolsChanged) nextTools = out;
   }
 
-  if (counts.size === 0) return none;
-  return { payload: { ...payload, tools }, changed: true, counts };
+  let messagesChanged = false;
+  let nextMessages: unknown[] | undefined;
+  if (Array.isArray(payload.messages)) {
+    const msgs = payload.messages;
+    let outMsgs: unknown[] | undefined;
+    for (let i = 0; i < msgs.length; i++) {
+      const msg = msgs[i];
+      if (!isObj(msg) || !Array.isArray(msg.content)) continue;
+      let blocksChanged = false;
+      let outBlocks: unknown[] | undefined;
+      const blocks = msg.content;
+      for (let j = 0; j < blocks.length; j++) {
+        const block = blocks[j];
+        if (
+          !isObj(block) ||
+          block.type !== "tool_addition" ||
+          !isObj(block.tool) ||
+          !isObj(block.tool.definition)
+        ) {
+          continue;
+        }
+        const res = rewriteSingleTool(
+          block.tool.definition,
+          descRules,
+          paramRules,
+          memo,
+          counts,
+        );
+        if (res === null) return none;
+        if (res.changed) {
+          if (!outBlocks) outBlocks = blocks.slice();
+          outBlocks[j] = {
+            ...block,
+            tool: { ...block.tool, definition: res.entry },
+          };
+          blocksChanged = true;
+        }
+      }
+      if (blocksChanged && outBlocks) {
+        if (!outMsgs) outMsgs = msgs.slice();
+        outMsgs[i] = { ...msg, content: outBlocks };
+        messagesChanged = true;
+      }
+    }
+    if (messagesChanged) nextMessages = outMsgs;
+  }
+
+  if (!toolsChanged && !messagesChanged) return none;
+  const nextPayload: Obj = { ...payload };
+  if (toolsChanged && nextTools) nextPayload.tools = nextTools;
+  if (messagesChanged && nextMessages) nextPayload.messages = nextMessages;
+  return { payload: nextPayload, changed: true, counts };
 }
 
 export function rewriteSystemPrompt(
   systemPrompt: string,
   rules: CompiledRule[],
-): { systemPrompt: string; counts: Map<string, number> } {
+  memo?: Map<string, CachedTextRewrite>,
+): { systemPrompt: string; changed: boolean; counts: Map<string, number> } {
+  const cached = memo?.get(systemPrompt);
+  if (cached !== undefined) {
+    return {
+      systemPrompt: cached.text,
+      changed: cached.changed,
+      counts: new Map<string, number>(),
+    };
+  }
   const counts = new Map<string, number>();
   let text = systemPrompt;
   for (const rule of rules) {
     if (rule.scope !== "system_prompt" || rule.error || !rule.re) continue;
     const result = applyRule(text, rule);
     text = result.text;
-    if (result.hits > 0) counts.set(rule.id, (counts.get(rule.id) ?? 0) + result.hits);
+    if (result.hits > 0) {
+      counts.set(rule.id, (counts.get(rule.id) ?? 0) + result.hits);
+    }
   }
-  return { systemPrompt: text, counts };
+  const changed = counts.size > 0;
+  memo?.set(systemPrompt, { text, changed });
+  return { systemPrompt: text, changed, counts };
+}
+
+/**
+ * Rewrite `role === "system"` messages across a transcript without mutating
+ * input objects. Operates per section on `msg.sections` (preserving section
+ * keys and `null` tombstones) and on non-empty `msg.content`, returning the
+ * exact input `messages` reference when nothing matched.
+ */
+export function rewriteSystemMessages<T>(
+  messages: T[],
+  rules: CompiledRule[],
+  memo?: Map<string, CachedTextRewrite>,
+): { messages: T[]; changed: boolean; counts: Map<string, number> } {
+  const counts = new Map<string, number>();
+  const active = rules.filter(
+    (rule) => rule.scope === "system_prompt" && !rule.error && rule.re,
+  );
+  if (active.length === 0) {
+    return { messages, changed: false, counts };
+  }
+
+  let anyChanged = false;
+  let out: T[] | undefined;
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!isObj(msg) || msg.role !== "system") continue;
+
+    let sectionsChanged = false;
+    let nextSections: Record<string, unknown> | undefined;
+    if (isObj(msg.sections)) {
+      const entries = Object.entries(msg.sections);
+      const candidate: Record<string, unknown> = {};
+      for (const [key, value] of entries) {
+        if (typeof value !== "string" || value.length === 0) {
+          candidate[key] = value;
+          continue;
+        }
+        const res = rewriteSystemPrompt(value, active, memo);
+        mergeCounts(counts, res.counts);
+        candidate[key] = res.systemPrompt;
+        if (res.changed) sectionsChanged = true;
+      }
+      if (sectionsChanged) nextSections = candidate;
+    }
+
+    let contentChanged = false;
+    let nextContent: unknown;
+    if (typeof msg.content === "string" && msg.content.length > 0) {
+      const res = rewriteSystemPrompt(msg.content, active, memo);
+      mergeCounts(counts, res.counts);
+      if (res.changed) {
+        contentChanged = true;
+        nextContent = res.systemPrompt;
+      }
+    } else if (Array.isArray(msg.content)) {
+      let blocksOut: unknown[] | undefined;
+      for (let j = 0; j < msg.content.length; j++) {
+        const block = msg.content[j];
+        if (
+          !isObj(block) ||
+          block.type !== "text" ||
+          typeof block.text !== "string" ||
+          block.text.length === 0
+        ) {
+          continue;
+        }
+        const res = rewriteSystemPrompt(block.text, active, memo);
+        mergeCounts(counts, res.counts);
+        if (res.changed) {
+          if (!blocksOut) blocksOut = msg.content.slice();
+          blocksOut[j] = { ...block, text: res.systemPrompt };
+          contentChanged = true;
+        }
+      }
+      if (contentChanged) nextContent = blocksOut;
+    }
+
+    if (sectionsChanged || contentChanged) {
+      if (!out) out = messages.slice();
+      const updated: Obj = { ...msg };
+      if (sectionsChanged && nextSections) updated.sections = nextSections;
+      if (contentChanged) updated.content = nextContent;
+      out[i] = updated as T;
+      anyChanged = true;
+    }
+  }
+
+  if (!anyChanged || !out) {
+    return { messages, changed: false, counts };
+  }
+  return { messages: out, changed: true, counts };
 }
 
 export function globalConfigPath(): string {
@@ -368,10 +680,13 @@ function readLayer(path: string): Layer {
 
 export default function promptRewriterExtension(pi: ExtensionAPI) {
   let compiled: CompiledRule[] = [];
+  let rulesSignature = "";
   let watchers: FSWatcher[] = [];
   let totalIssues: string[] = [];
   let source = "";
   const lifetime = new Map<string, number>();
+  const sectionMemo = new Map<string, CachedTextRewrite>();
+  const toolMemo = new Map<string, CachedToolRewrite>();
 
   function report(counts: Map<string, number>): void {
     for (const [id, hits] of counts) {
@@ -389,13 +704,21 @@ export default function promptRewriterExtension(pi: ExtensionAPI) {
     return parts.join(", ");
   }
 
-  function load(cwd: string, why: string, notify: (text: string, level: "info" | "error") => void): void {
+  function load(
+    cwd: string,
+    why: string,
+    notify: (text: string, level: "info" | "error") => void,
+  ): void {
     const globalLayer = readLayer(globalConfigPath());
     const projectLayer = readLayer(projectConfigPath(cwd));
     // A present project file replaces the global list; an absent one inherits.
     const active = projectLayer.present ? projectLayer : globalLayer;
     const { compiled: next, issues: compileIssues } = compileRules(active.rules);
-    const issues = [...globalLayer.issues, ...projectLayer.issues, ...compileIssues];
+    const issues = [
+      ...globalLayer.issues,
+      ...projectLayer.issues,
+      ...compileIssues,
+    ];
 
     // Nothing usable came out of this read: a file that will not parse, or
     // rules whose patterns all fail to compile. Keep the last good set so a
@@ -409,6 +732,13 @@ export default function promptRewriterExtension(pi: ExtensionAPI) {
         "error",
       );
       return;
+    }
+
+    const nextSignature = JSON.stringify(active.rules);
+    if (nextSignature !== rulesSignature) {
+      rulesSignature = nextSignature;
+      sectionMemo.clear();
+      toolMemo.clear();
     }
 
     compiled = next;
@@ -447,6 +777,9 @@ export default function promptRewriterExtension(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    sectionMemo.clear();
+    toolMemo.clear();
+    rulesSignature = "";
     load(ctx.cwd, "loaded", (text, level) => ctx.ui.notify(text, level));
     watchConfig(ctx.cwd, ctx);
   });
@@ -456,19 +789,21 @@ export default function promptRewriterExtension(pi: ExtensionAPI) {
     watchers = [];
   });
 
-  pi.on("before_agent_start", async (event) => {
-    if (compiled.every((rule) => rule.scope !== "system_prompt")) return undefined;
-    const { systemPrompt, counts } = rewriteSystemPrompt(
-      event.systemPrompt,
+  pi.on("context_with_system", async (event) => {
+    if (compiled.every((rule) => rule.scope !== "system_prompt")) {
+      return undefined;
+    }
+    const result = rewriteSystemMessages(
+      event.messages,
       compiled,
+      sectionMemo,
     );
-    report(counts);
-    if (counts.size === 0) return undefined;
-    return { systemPrompt };
+    report(result.counts);
+    return result.changed ? { messages: result.messages } : undefined;
   });
 
   pi.on("before_provider_request", async (event) => {
-    const result = rewriteToolPayload(event.payload, compiled);
+    const result = rewriteToolPayload(event.payload, compiled, toolMemo);
     report(result.counts);
     return result.changed ? result.payload : undefined;
   });

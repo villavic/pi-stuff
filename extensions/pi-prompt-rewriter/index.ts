@@ -376,7 +376,7 @@ export default function promptRewriterExtension(pi: ExtensionAPI) {
   function report(counts: Map<string, number>): void {
     for (const [id, hits] of counts) {
       lifetime.set(id, (lifetime.get(id) ?? 0) + hits);
-      console.error(`[prompt-rewriter] ${id}: ${hits} replacement(s)`);
+      // suppressed: report only via /prompt-rewriter command
     }
   }
 

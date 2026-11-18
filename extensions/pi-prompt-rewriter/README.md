@@ -107,17 +107,10 @@ entries, while a namespace proxy appears as `mcp__<server>`.
 
 ## Seeing the effect
 
-Each request logs one line per rule that fired, to stderr:
-
-```
-[prompt-rewriter] shorten-param-docs: 14 replacement(s)
-```
-
 `/prompt-rewriter` prints the loaded rules, the config path in use, and
-the per-rule hit count for the session. Start-up and every reload report a
-one-line summary. To see the result in the payload itself, capture it with
-`lab/prompt-capture.ts` and re-run the rules against the capture:
-`node lab/tmp/test-rewriter.mjs`.
+the per-rule hit count for the session. To see the result in the payload
+itself, capture it with `extensions/prompt-capture/index.ts` and re-run
+the rules against the capture: `node tests/test-rewriter.mjs`.
 
 ## Cost
 
@@ -131,7 +124,7 @@ declarations. Keep the rule set small and specific.
 
 ```bash
 pi -e ./extensions/pi-prompt-rewriter/index.ts   # single file, this repo
-node lab/tmp/test-rewriter.mjs                   # rules vs. a captured payload
+node tests/test-rewriter.mjs                      # rules vs. a captured payload
 npm run typecheck                                # from the repo root
 ```
 

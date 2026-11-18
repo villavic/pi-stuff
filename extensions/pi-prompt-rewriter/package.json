@@ -1,6 +1,6 @@
 {
   "name": "@villavic/pi-prompt-rewriter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Surgical, config-driven rewriting of the prompt payload: system prompt text, tool descriptions, and tool parameter descriptions, from rules in config.json, hot-reloaded",
   "type": "module",
   "repository": {

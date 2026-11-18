@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+Refactor: install and test instructions updated to use `npm:@villavic/pi-prompt-rewriter`;
+README paths corrected; per-rewrite console output suppressed.
+
 ## 0.1.0
 
 First release. Config-driven, surgical rewriting of the prompt payload.

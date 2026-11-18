@@ -120,12 +120,17 @@ caching, so a `system_prompt` rule costs a full prompt-cache miss on
 every turn. Tool-scope rules have the same effect on the tool
 declarations. Keep the rule set small and specific.
 
-## Install and test
+## Install
 
 ```bash
-pi -e ./extensions/pi-prompt-rewriter/index.ts   # single file, this repo
-node tests/test-rewriter.mjs                      # rules vs. a captured payload
-npm run typecheck                                # from the repo root
+pi install npm:@villavic/pi-prompt-rewriter
+```
+
+## Test
+
+```bash
+pi -e ./extensions/pi-prompt-rewriter/index.ts
+node tests/test-rewriter.mjs
 ```
 
 Config lives in `~/.pi/agent/extensions/pi-prompt-rewriter/config.json`

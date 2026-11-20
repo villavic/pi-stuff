@@ -42,13 +42,22 @@ function getParser(): Promise<Parser> {
 /** Conservative raw scan used only when the AST is unavailable or has errors. */
 function rawHasHeredoc(command: string): boolean {
   let inSingle = false;
+  let inDouble = false;
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
-    if (ch === "'") {
+    if (ch === "\\" && (inSingle || inDouble)) {
+      i += 1;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
       inSingle = !inSingle;
       continue;
     }
-    if (inSingle) continue;
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (inSingle || inDouble) continue;
     if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
       return true;
     }

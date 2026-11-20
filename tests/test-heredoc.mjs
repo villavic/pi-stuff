@@ -28,4 +28,3 @@ for (const { cmd, expected } of cases) {
 }
 console.log(failures === 0 ? "\nall heredoc checks passed" : `\n${failures} heredoc check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
-EOF

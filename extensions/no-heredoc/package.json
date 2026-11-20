@@ -1,0 +1,10 @@
+{
+  "name": "@villavic/no-heredoc",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "web-tree-sitter": "^0.26.0",
+    "tree-sitter-bash": "^0.25.0"
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "@villavic/no-heredoc",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Blocks shell heredocs (<<) in bash tool calls using a tree-sitter-bash AST check.",
   "type": "module",
   "license": "MIT",

@@ -1,10 +1,35 @@
 {
   "name": "@villavic/no-heredoc",
   "version": "1.0.0",
+  "description": "Blocks shell heredocs (<<) in bash tool calls using a tree-sitter-bash AST check.",
   "type": "module",
-  "private": true,
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "bash",
+    "heredoc"
+  ],
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/villavic/pi-stuff.git",
+    "directory": "extensions/no-heredoc"
+  },
   "dependencies": {
     "web-tree-sitter": "^0.26.0",
     "tree-sitter-bash": "^0.25.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

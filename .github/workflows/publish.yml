@@ -4,13 +4,10 @@ on:
   push:
     tags:
       - "v*"
-    paths:
-      - "extensions/pi-prompt-rewriter/**"
-      - "extensions/no-heredoc/**"
   workflow_dispatch:
     inputs:
       extension:
-        description: "Extension directory name to publish (e.g. pi-prompt-rewriter). Leave empty for all."
+        description: "Extension directory name to publish (e.g. pi-prompt-rewriter). Leave empty for all whose package.json version matches the tag."
         required: false
         type: string
 
@@ -19,13 +16,59 @@ permissions:
   contents: read
 
 jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect extensions to publish
+        id: detect
+        run: |
+          set -euo pipefail
+          candidates="pi-prompt-rewriter no-heredoc"
+          selected=()
+
+          if [ -n "${{ github.event.inputs.extension }}" ]; then
+            selected+=("${{ github.event.inputs.extension }}")
+          else
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+            for ext in $candidates; do
+              if [ ! -f "extensions/$ext/package.json" ]; then
+                continue
+              fi
+              pkg_version="$(node -p "require('./extensions/$ext/package.json').version")"
+              if [ "$pkg_version" = "$version" ]; then
+                selected+=("$ext")
+              fi
+            done
+          fi
+
+          if [ "${#selected[@]}" -eq 0 ]; then
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          json='{"include":['
+          first=1
+          for ext in "${selected[@]}"; do
+            if [ "$first" -eq 1 ]; then
+              first=0
+            else
+              json+=','
+            fi
+            json+="{\"extension\":\"$ext\"}"
+          done
+          json+=']}'
+          echo "matrix=$json" >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: detect
+    if: ${{ needs.detect.outputs.matrix != '{"include":[]}' }}
     runs-on: ubuntu-latest
     strategy:
-      matrix:
-        extension:
-          - pi-prompt-rewriter
-          - no-heredoc
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
     defaults:
       run:
         working-directory: extensions/${{ matrix.extension }}
@@ -38,6 +81,5 @@ jobs:
           cache: npm
           cache-dependency-path: extensions/${{ matrix.extension }}/package-lock.json
       - run: npm ci
-
       - name: Publish
         run: npm stage publish --provenance --access public

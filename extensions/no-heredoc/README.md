@@ -7,7 +7,7 @@ Blocks shell heredocs (`<<`) in `bash` tool calls before execution.
 Heredocs (`cat <<EOF`, `python3 - <<PY`, `git commit -m "$(cat <<EOF ...)"`)
 are a common way to bypass Pi's `write`/`edit` tools and to inject inline
 scripts. They also defeat the per-section prompt cache and tool-declaration
-freeze that `pi-prompt-rewriter` relies on. This extension rejects any bash
+freeze that `npm:@villavic/pi-prompt-rewriter` relies on. This extension rejects any bash
 command whose AST contains a `heredoc_redirect` node, steering the model
 toward `write` and `edit` instead.
 
@@ -35,4 +35,3 @@ pi install npm:@villavic/no-heredoc
 pi -e ./extensions/no-heredoc/index.ts
 node tests/test-no-heredoc.mjs
 ```
-EOF

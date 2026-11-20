@@ -20,6 +20,13 @@ jobs:
           node-version: "26"
           cache: npm
       - run: npm ci
+      - name: Install extension dependencies
+        run: |
+          for dir in extensions/*/; do
+            if [ -f "$dir/package.json" ]; then
+              (cd "$dir" && npm ci)
+            fi
+          done
       - run: npm run typecheck
 
   test:
@@ -32,6 +39,13 @@ jobs:
           node-version: "26"
           cache: npm
       - run: npm ci
+      - name: Install extension dependencies
+        run: |
+          for dir in extensions/*/; do
+            if [ -f "$dir/package.json" ]; then
+              (cd "$dir" && npm ci)
+            fi
+          done
       - name: Run extension tests
         run: |
           for t in tests/test-*.mjs; do

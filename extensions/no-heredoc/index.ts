@@ -63,17 +63,19 @@ async function hasHeredoc(command: string): Promise<boolean> {
   } catch {
     return rawHasHeredoc(command);
   }
-  let tree: ReturnType<Parser["parse"]>;
+  let tree: ReturnType<Parser["parse"]> | null = null;
   try {
     tree = parser.parse(command);
+    if (!tree) return rawHasHeredoc(command);
+    const nodes = tree.rootNode.descendantsOfType("heredoc_redirect");
+    if (nodes.length > 0) return true;
+    if (tree.rootNode.hasError && rawHasHeredoc(command)) return true;
+    return false;
   } catch {
     return rawHasHeredoc(command);
+  } finally {
+    tree?.delete();
   }
-  if (!tree) return rawHasHeredoc(command);
-  const nodes = tree.rootNode.descendantsOfType("heredoc_redirect");
-  if (nodes.length > 0) return true;
-  if (tree.rootNode.hasError && rawHasHeredoc(command)) return true;
-  return false;
 }
 
 export default function noHeredocExtension(pi: ExtensionAPI) {

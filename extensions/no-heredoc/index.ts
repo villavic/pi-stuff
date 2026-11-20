@@ -45,7 +45,7 @@ function rawHasHeredoc(command: string): boolean {
   let inDouble = false;
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
-    if (ch === "\\" && (inSingle || inDouble)) {
+    if (ch === "\\" && !inSingle) {
       i += 1;
       continue;
     }

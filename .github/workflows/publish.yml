@@ -21,7 +21,7 @@ jobs:
     outputs:
       matrix: ${{ steps.detect.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Detect extensions to publish
         id: detect
         run: |
@@ -73,8 +73,8 @@ jobs:
       run:
         working-directory: extensions/${{ matrix.extension }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "26"
           registry-url: "https://registry.npmjs.org"
